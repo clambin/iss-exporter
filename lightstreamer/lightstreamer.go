@@ -1,4 +1,5 @@
-// Package lightstreamer provides a very basic implementation of the LightStreamer protocol.  This is in no way production-ready.
+// Package lightstreamer provides a (very) basic implementation of the LightStreamer protocol.
+// This is in no way production-ready.
 //
 // Ref: https://www.lightstreamer.com/sdks/ls-generic-client/2.1.0/TLCP%20Specifications.pdf
 package lightstreamer
@@ -21,17 +22,17 @@ import (
 const ServerURL = "https://push.lightstreamer.com/lightstreamer"
 
 type Client struct {
+	Logger        *slog.Logger
+	subscriptions map[string]*subscription
 	Set           string
 	CID           string
 	connectionID  string
 	serverURL     string
 	requestLimit  int
 	keepAliveTime int
-	Logger        *slog.Logger
 	Connected     atomic.Bool
 	reqId         atomic.Int32
 	subId         atomic.Int32
-	subscriptions map[string]*subscription
 }
 
 func NewClient(set, cid string, logger *slog.Logger) *Client {
@@ -61,7 +62,6 @@ func (c *Client) Run(ctx context.Context) error {
 			c.connectionID = parts[1]
 			c.requestLimit, _ = strconv.Atoi(parts[2])
 			c.keepAliveTime, _ = strconv.Atoi(parts[3])
-			_ = parts[4]
 			c.Connected.Store(true)
 			c.Logger.Debug("CONOK", "id", c.connectionID, "keepalive", c.keepAliveTime)
 		case "SERVNAME":
@@ -119,6 +119,7 @@ func (c *Client) Subscribe(ctx context.Context, group string, schema []string, f
 	form.Set("LS_group", group)
 	form.Set("LS_schema", strings.Join(schema, " "))
 	form.Set("LS_mode", "MERGE")
+	form.Set("LS_requested_max_frequency", "1")
 
 	r, err := c.call(ctx, "control", form)
 	if err != nil {
@@ -168,9 +169,9 @@ func (c *Client) call(ctx context.Context, request string, values url.Values) (i
 }
 
 type subscription struct {
-	Values   Values
 	Logger   *slog.Logger
 	callback func(Values)
+	Values   Values
 }
 
 func (s *subscription) processUpdate(update Values) (err error) {

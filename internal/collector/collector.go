@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/clambin/iss_exporter/lightstreamer"
+	"github.com/clambin/iss-exporter/lightstreamer"
 	"github.com/prometheus/client_golang/prometheus"
 	"log/slog"
 	"net/http"
@@ -88,8 +88,6 @@ type telemetryCollector struct {
 	Logger *slog.Logger
 }
 
-var schema = []string{"Value"}
-
 func (t *telemetryCollector) run(ctx context.Context) {
 	var ch chan error
 	c := lightstreamer.NewClient(t.set, "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", t.Logger.With("lightstreamer", t.set))
@@ -120,10 +118,11 @@ func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Clien
 	return ch
 }
 
+var schema = []string{"Value"}
+
 func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Client) error {
 	for _, group := range t.groups {
 		if err := c.Subscribe(ctx, group, schema, func(values lightstreamer.Values) {
-			t.Logger.Debug("lightstreamer", "group", group, "values", values)
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {
 				t.Logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)

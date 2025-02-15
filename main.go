@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/clambin/iss_exporter/internal/collector"
+	"github.com/clambin/iss-exporter/internal/collector"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log/slog"
