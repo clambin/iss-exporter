@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,13 +108,17 @@ func (c *Client) processUpdate(parts []string) error {
 }
 
 func (c *Client) Subscribe(ctx context.Context, group string, schema []string, f func(Values)) error {
+	if !c.Connected.Load() {
+		return errors.New("client is not connected")
+	}
+
 	reqId := c.reqId.Add(1)
 	subId := c.subId.Add(1)
 
 	form := make(url.Values)
 	form.Set("LS_op", "add")
 	form.Set("LS_reqId", strconv.Itoa(int(reqId)))
-	form.Set("LS_session", c.connectionID) // todo: race condition
+	form.Set("LS_session", c.connectionID)
 	form.Set("LS_subId", strconv.Itoa(int(subId)))
 	form.Set("LS_data_adapter", "DEFAULT")
 	form.Set("LS_group", group)
@@ -175,9 +180,9 @@ type subscription struct {
 }
 
 func (s *subscription) processUpdate(update Values) (err error) {
-	orig := s.Values
+	//orig := s.Values
 	if s.Values, err = s.Values.Update(update); err == nil {
-		s.Logger.Debug("update processed", "before", orig, "update", update, "after", s.Values)
+		//s.Logger.Debug("update processed", "before", orig, "update", update, "after", s.Values)
 		if s.callback != nil {
 			s.callback(s.Values)
 		}

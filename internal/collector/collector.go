@@ -38,9 +38,8 @@ func NewCollector(ctx context.Context, groups []string, logger *slog.Logger) *Co
 	tc := telemetryCollector{
 		set:    "ISSLIVE",
 		Logger: logger,
-		groups: groups,
 	}
-	go tc.run(ctx)
+	go tc.run(ctx, groups)
 	return &Collector{Logger: logger}
 }
 
@@ -62,12 +61,12 @@ func (c Collector) Collect(ch chan<- prometheus.Metric) {
 
 func getLocation() (string, string, error) {
 	type ISSUpdate struct {
-		Timestamp   int `json:"timestamp"`
 		IssPosition struct {
 			Latitude  string `json:"latitude"`
 			Longitude string `json:"longitude"`
 		} `json:"iss_position"`
-		Message string `json:"message"`
+		Message   string `json:"message"`
+		Timestamp int    `json:"timestamp"`
 	}
 	resp, err := http.Get("http://api.open-notify.org/iss-now.json")
 	if err != nil {
@@ -83,18 +82,17 @@ func getLocation() (string, string, error) {
 }
 
 type telemetryCollector struct {
-	set    string
-	groups []string
 	Logger *slog.Logger
+	set    string
 }
 
-func (t *telemetryCollector) run(ctx context.Context) {
+func (t *telemetryCollector) run(ctx context.Context, groups []string) {
 	var ch chan error
 	c := lightstreamer.NewClient(t.set, "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", t.Logger.With("lightstreamer", t.set))
 
 	for {
 		if ch == nil {
-			ch = t.connect(ctx, c)
+			ch = t.connect(ctx, c, groups)
 		}
 		select {
 		case <-ctx.Done():
@@ -106,13 +104,13 @@ func (t *telemetryCollector) run(ctx context.Context) {
 	}
 }
 
-func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Client) chan error {
+func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Client, groups []string) chan error {
 	ch := make(chan error)
 	go func() { ch <- c.Run(ctx) }()
 	for !c.Connected.Load() {
 		time.Sleep(100 * time.Millisecond)
 	}
-	if err := t.subscribe(ctx, c); err != nil {
+	if err := t.subscribe(ctx, c, groups); err != nil {
 		t.Logger.Error("failed to subscribe to lightstreamer", "err", err)
 	}
 	return ch
@@ -120,8 +118,8 @@ func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Clien
 
 var schema = []string{"Value"}
 
-func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Client) error {
-	for _, group := range t.groups {
+func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Client, groups []string) error {
+	for _, group := range groups {
 		if err := c.Subscribe(ctx, group, schema, func(values lightstreamer.Values) {
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {

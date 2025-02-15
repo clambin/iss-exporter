@@ -11,7 +11,7 @@ ADD . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build \
     -ldflags="-X main.version=$VERSION" \
-    -o iss_exporter \
+    -o iss-exporter \
     .
 
 FROM alpine
@@ -20,11 +20,11 @@ RUN apk update && \
     apk add --no-cache tzdata
 
 WORKDIR /app
-COPY --from=builder /app/iss_exporter /app/iss_exporter
+COPY --from=builder /app/iss-exporter /app/iss-exporter
 
 RUN /usr/sbin/addgroup app
 RUN /usr/sbin/adduser app -G app -D
 USER app
 
-ENTRYPOINT ["/app/iss_exporter"]
+ENTRYPOINT ["/app/iss-exporter"]
 CMD []
