@@ -34,10 +34,11 @@ type Collector struct {
 	Logger *slog.Logger
 }
 
-func NewCollector(ctx context.Context, logger *slog.Logger) *Collector {
+func NewCollector(ctx context.Context, groups []string, logger *slog.Logger) *Collector {
 	tc := telemetryCollector{
 		set:    "ISSLIVE",
 		Logger: logger,
+		groups: groups,
 	}
 	go tc.run(ctx)
 	return &Collector{Logger: logger}
@@ -83,6 +84,7 @@ func getLocation() (string, string, error) {
 
 type telemetryCollector struct {
 	set    string
+	groups []string
 	Logger *slog.Logger
 }
 
@@ -94,14 +96,7 @@ func (t *telemetryCollector) run(ctx context.Context) {
 
 	for {
 		if ch == nil {
-			ch = make(chan error)
-			go func() { ch <- c.Serve(ctx) }()
-			for !c.Connected.Load() {
-				time.Sleep(100 * time.Millisecond)
-			}
-			if err := t.subscribe(ctx, c); err != nil {
-				t.Logger.Error("failed to subscribe to lightstreamer", "err", err)
-			}
+			ch = t.connect(ctx, c)
 		}
 		select {
 		case <-ctx.Done():
@@ -113,12 +108,20 @@ func (t *telemetryCollector) run(ctx context.Context) {
 	}
 }
 
+func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Client) chan error {
+	ch := make(chan error)
+	go func() { ch <- c.Run(ctx) }()
+	for !c.Connected.Load() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := t.subscribe(ctx, c); err != nil {
+		t.Logger.Error("failed to subscribe to lightstreamer", "err", err)
+	}
+	return ch
+}
+
 func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Client) error {
-	for _, group := range []string{
-		"NODE3000005", // Urine Tank Qty
-		"NODE3000008", // Waste Water Tank Qty
-		"NODE3000009", // Clean Water Tank Qty
-	} {
+	for _, group := range t.groups {
 		if err := c.Subscribe(ctx, group, schema, func(values lightstreamer.Values) {
 			t.Logger.Debug("lightstreamer", "group", group, "values", values)
 			value, err := strconv.ParseFloat(values[0], 64)

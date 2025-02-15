@@ -43,7 +43,7 @@ func NewClient(set, cid string, logger *slog.Logger) *Client {
 	}
 }
 
-func (c *Client) Serve(ctx context.Context) error {
+func (c *Client) Run(ctx context.Context) error {
 	r, err := c.connect(ctx)
 	if err != nil {
 		return err
