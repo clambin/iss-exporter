@@ -18,7 +18,7 @@ var (
 	locationMetric = prometheus.NewDesc(
 		prometheus.BuildFQName("iss", "", "location"),
 		"current ISS location",
-		[]string{"lon", "lat"},
+		[]string{"longitude", "latitude"},
 		nil,
 	)
 )
@@ -48,12 +48,13 @@ func (c collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c collector) Collect(ch chan<- prometheus.Metric) {
-	lon, lat, err := getLocation()
+	longitude, latitude, err := getLocation()
 	if err != nil {
 		c.Logger.Error("failed to get location", "err", err)
 		return
 	}
-	ch <- prometheus.MustNewConstMetric(locationMetric, prometheus.GaugeValue, 1.0, lon, lat)
+	c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
+	ch <- prometheus.MustNewConstMetric(locationMetric, prometheus.GaugeValue, 1.0, longitude, latitude)
 }
 
 func getLocation() (string, string, error) {
@@ -75,5 +76,5 @@ func getLocation() (string, string, error) {
 	}
 	var update ISSUpdate
 	err = json.NewDecoder(resp.Body).Decode(&update)
-	return update.IssPosition.Longitude, update.IssPosition.Latitude, nil
+	return update.IssPosition.Longitude, update.IssPosition.Latitude, err
 }
