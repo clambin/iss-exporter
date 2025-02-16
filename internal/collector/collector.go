@@ -34,7 +34,15 @@ type Collector struct {
 	Logger *slog.Logger
 }
 
-func NewCollector(ctx context.Context, groups []string, logger *slog.Logger) *Collector {
+var groups = []string{
+	"NODE3000005",   // Urine Tank Qty
+	"NODE3000008",   // Waste Water Tank Qty
+	"NODE3000009",   // Clean Water Tank Qty
+	"USLAB000058",   // cabin pressure USA Lab
+	"AIRLOCK000049", // crewlock pressure
+}
+
+func NewCollector(ctx context.Context, logger *slog.Logger) *Collector {
 	tc := telemetryCollector{
 		set:    "ISSLIVE",
 		Logger: logger,
@@ -49,6 +57,8 @@ func (c Collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c Collector) Collect(ch chan<- prometheus.Metric) {
+	telemetryMetric.Collect(ch)
+
 	longitude, latitude, err := getLocation()
 	if err != nil {
 		c.Logger.Error("failed to get location", "err", err)
@@ -56,7 +66,6 @@ func (c Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
 	ch <- prometheus.MustNewConstMetric(locationMetric, prometheus.GaugeValue, 1.0, longitude, latitude)
-	telemetryMetric.Collect(ch)
 }
 
 func getLocation() (string, string, error) {
@@ -127,6 +136,7 @@ func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Cli
 				return
 			}
 			telemetryMetric.WithLabelValues(group).Set(value)
+			t.Logger.Debug("update processed", "group", group, "value", value)
 		}); err != nil {
 			return fmt.Errorf("subscribe(%s): %w", "NODE3000005", err)
 		}

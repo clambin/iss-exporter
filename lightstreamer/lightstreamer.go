@@ -70,9 +70,11 @@ func (c *Client) Run(ctx context.Context) error {
 		case "CLIENTIP":
 			c.Logger.Debug("CLIENTIP", "ip", parts[1])
 		case "CONS":
-			c.Logger.Debug("CONS", "arg", parts[1])
-		case "NOOP", "PROBE":
+			c.Logger.Debug("CONS", "bandwidth", parts[1])
+		case "NOOP":
 			// ignore
+		case "PROBE":
+			c.Logger.Debug("PROBE")
 		case "SUBOK":
 			c.Logger.Debug("SUBOK", "subID", parts[1], "items", parts[2], "fields", parts[3:])
 		case "CONF":
@@ -80,7 +82,7 @@ func (c *Client) Run(ctx context.Context) error {
 		case "SYNC":
 			c.Logger.Debug("SYNC", "seconds", parts[1])
 		case "U":
-			c.Logger.Debug("U", "args", parts[1:])
+			//c.Logger.Debug("U", "args", parts[1:])
 			if err = c.processUpdate(parts); err != nil {
 				c.Logger.Warn("error processing update", "err", err)
 			}
@@ -124,7 +126,7 @@ func (c *Client) Subscribe(ctx context.Context, group string, schema []string, f
 	form.Set("LS_group", group)
 	form.Set("LS_schema", strings.Join(schema, " "))
 	form.Set("LS_mode", "MERGE")
-	form.Set("LS_requested_max_frequency", "1")
+	form.Set("LS_requested_max_frequency", "0.1") // TODO: make this is a parameter
 
 	r, err := c.call(ctx, "control", form)
 	if err != nil {
@@ -180,9 +182,7 @@ type subscription struct {
 }
 
 func (s *subscription) processUpdate(update Values) (err error) {
-	//orig := s.Values
 	if s.Values, err = s.Values.Update(update); err == nil {
-		//s.Logger.Debug("update processed", "before", orig, "update", update, "after", s.Values)
 		if s.callback != nil {
 			s.callback(s.Values)
 		}
