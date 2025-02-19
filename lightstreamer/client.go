@@ -57,23 +57,35 @@ func (s *Client) Connect(ctx context.Context) (*ClientConnection, error) {
 }
 
 type subscription struct {
+	last   map[int]Values
 	update UpdateFunc
-	logger *slog.Logger
 }
 
-type UpdateFunc func(item int, values []string, l *slog.Logger)
+type UpdateFunc func(item int, values Values)
+
+func (s *subscription) Update(item int, values Values) error {
+	if s.last == nil {
+		s.last = make(map[int]Values)
+	}
+	next, err := s.last[item].Update(values)
+	if err == nil {
+		s.last[item] = next
+		s.update(item, next)
+	}
+	return err
+}
 
 type ClientConnection struct {
 	logger         *slog.Logger
-	lock           sync.RWMutex
+	httpClient     *http.Client
+	subscriptions  map[int]*subscription
 	sessionID      string
+	serverURL      string
 	requestLimit   int
 	keepAliveTime  int
-	subscriptions  map[int]*subscription
 	requestID      int
 	subscriptionID int
-	serverURL      string
-	httpClient     *http.Client
+	lock           sync.RWMutex
 }
 
 func (c *ClientConnection) Connected() bool {
@@ -106,8 +118,6 @@ func (c *ClientConnection) connect(ctx context.Context, set string, cid string) 
 	if err != nil {
 		return nil, err
 	}
-
-	c.logger.Info("Connecting to LightStreamer", "url", req.URL)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -192,8 +202,7 @@ func (c *ClientConnection) handleUpdate(parts []string) error {
 	if !ok {
 		return fmt.Errorf("unknown subscription ID %d", subID)
 	}
-	sub.update(item, parts[2:], sub.logger)
-	return nil
+	return sub.Update(item, parts[2:])
 }
 
 func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
@@ -206,7 +215,6 @@ func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group 
 
 	c.requestID++
 	c.subscriptionID++
-
 	parameters := make(url.Values)
 	parameters.Set("LS_op", "add")
 	parameters.Set("LS_reqId", strconv.Itoa(c.requestID))
@@ -239,13 +247,7 @@ func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group 
 
 	switch parts[0] {
 	case "REQOK":
-		l := c.logger.With(
-			slog.Group("subscription",
-				slog.String("adapter", adapter),
-				slog.String("group", group),
-			),
-		)
-		c.subscriptions[c.subscriptionID] = &subscription{logger: l, update: f}
+		c.subscriptions[c.subscriptionID] = &subscription{update: f}
 		return nil
 	case "REQERR":
 		if len(parts) != 4 {

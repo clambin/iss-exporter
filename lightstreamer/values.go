@@ -4,9 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type Values []string
+
+func (v Values) String() string {
+	return strings.Join(v, ",")
+}
 
 func (v Values) Update(update Values) (Values, error) {
 	if len(v) == 0 {
