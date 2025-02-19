@@ -29,7 +29,10 @@ func main() {
 		opts.Level = slog.LevelDebug
 	}
 
-	c := collector.NewCollector(ctx, slog.New(slog.NewTextHandler(os.Stderr, &opts)))
+	c, err := collector.NewCollector(ctx, slog.New(slog.NewTextHandler(os.Stderr, &opts)))
+	if err != nil {
+		panic(err)
+	}
 	prometheus.MustRegister(c)
 
 	http.Handle("/metrics", promhttp.Handler())

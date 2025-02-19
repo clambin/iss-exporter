@@ -31,24 +31,16 @@ var (
 )
 
 type Collector struct {
-	Logger *slog.Logger
+	connection *lightstreamer.ClientConnection
+	Logger     *slog.Logger
 }
 
-var groups = []string{
-	"NODE3000005",   // Urine Tank Qty
-	"NODE3000008",   // Waste Water Tank Qty
-	"NODE3000009",   // Clean Water Tank Qty
-	"USLAB000058",   // cabin pressure USA Lab
-	"AIRLOCK000049", // crewlock pressure
-}
-
-func NewCollector(ctx context.Context, logger *slog.Logger) *Collector {
-	tc := telemetryCollector{
-		set:    "ISSLIVE",
+func NewCollector(ctx context.Context, logger *slog.Logger) (c *Collector, err error) {
+	c = &Collector{
 		Logger: logger,
 	}
-	go tc.run(ctx, groups)
-	return &Collector{Logger: logger}
+	c.connection, err = lightStreamerFeed(ctx, logger)
+	return c, err
 }
 
 func (c Collector) Describe(ch chan<- *prometheus.Desc) {
@@ -90,56 +82,41 @@ func getLocation() (string, string, error) {
 	return update.IssPosition.Longitude, update.IssPosition.Latitude, err
 }
 
-type telemetryCollector struct {
-	Logger *slog.Logger
-	set    string
-}
-
-func (t *telemetryCollector) run(ctx context.Context, groups []string) {
-	var ch chan error
-	c := lightstreamer.NewClient(t.set, "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", t.Logger.With("lightstreamer", t.set))
-
-	for {
-		if ch == nil {
-			ch = t.connect(ctx, c, groups)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case err := <-ch:
-			t.Logger.Warn("lightstreamer error", "err", err)
-			ch = nil
-		}
-	}
-}
-
-func (t *telemetryCollector) connect(ctx context.Context, c *lightstreamer.Client, groups []string) chan error {
-	ch := make(chan error)
-	go func() { ch <- c.Run(ctx) }()
-	for !c.Connected.Load() {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if err := t.subscribe(ctx, c, groups); err != nil {
-		t.Logger.Error("failed to subscribe to lightstreamer", "err", err)
-	}
-	return ch
+var groups = []string{
+	"NODE3000005",   // Urine Tank Qty
+	"NODE3000008",   // Waste Water Tank Qty
+	"NODE3000009",   // Clean Water Tank Qty
+	"NODE3000011",   // O2 production rate
+	"USLAB000058",   // cabin pressure
+	"USLAB000059",   // cabin temperature
+	"AIRLOCK000049", // crewlock pressure
 }
 
 var schema = []string{"Value"}
 
-func (t *telemetryCollector) subscribe(ctx context.Context, c *lightstreamer.Client, groups []string) error {
+func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientConnection, error) {
+	client := lightstreamer.NewClient("ISSLIVE", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", logger)
+	conn, err := client.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for !conn.Connected() {
+		logger.Debug("waiting for connection")
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	for _, group := range groups {
-		if err := c.Subscribe(ctx, group, schema, func(values lightstreamer.Values) {
+		if err = conn.Subscribe(ctx, "DEFAULT", group, schema, func(item int, values []string, l *slog.Logger) {
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {
-				t.Logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)
+				logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)
 				return
 			}
 			telemetryMetric.WithLabelValues(group).Set(value)
-			t.Logger.Debug("update processed", "group", group, "value", value)
+			logger.Debug("update processed", "group", group, "value", value)
 		}); err != nil {
-			return fmt.Errorf("subscribe(%s): %w", "NODE3000005", err)
+			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
 	}
-	return nil
+	return conn, nil
 }
