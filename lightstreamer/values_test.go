@@ -1,7 +1,7 @@
 package lightstreamer
 
 import (
-	"github.com/stretchr/testify/assert"
+	"reflect"
 	"testing"
 )
 
@@ -10,34 +10,34 @@ func TestValues_Update(t *testing.T) {
 		name    string
 		current Values
 		update  Values
-		err     assert.ErrorAssertionFunc
+		pass    bool
 		want    Values
 	}{
 		{
 			name:   "init",
 			update: Values{"1", "2", "3", "4"},
-			err:    assert.NoError,
+			pass:   true,
 			want:   Values{"1", "2", "3", "4"},
 		},
 		{
 			name:    "blank field maintains the value",
 			current: Values{"1", "2", "3", "4"},
 			update:  Values{"1", "3", "", "2"},
-			err:     assert.NoError,
+			pass:    true,
 			want:    Values{"1", "3", "3", "2"},
 		},
 		{
 			name:    "$ means a nil value",
 			current: Values{"1", "2", "3", "4"},
 			update:  Values{"1", "3", "$", "4"},
-			err:     assert.NoError,
+			pass:    true,
 			want:    Values{"1", "3", "", "4"},
 		},
 		{
 			name:    "^n skips n cells",
 			current: Values{"1", "2", "3", "4"},
 			update:  Values{"1", "^2", "5"},
-			err:     assert.NoError,
+			pass:    true,
 			want:    Values{"1", "2", "3", "5"},
 		},
 	}
@@ -45,8 +45,12 @@ func TestValues_Update(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			next, err := tt.current.Update(tt.update)
-			tt.err(t, err)
-			assert.Equal(t, tt.want, next)
+			if tt.pass != (err == nil) {
+				t.Errorf("expected pass %v but got %v", tt.pass, err)
+			}
+			if !reflect.DeepEqual(tt.want, next) {
+				t.Errorf("expected %v but got %v", tt.want, next)
+			}
 		})
 	}
 }

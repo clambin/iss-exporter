@@ -18,6 +18,7 @@ func (v Values) Update(update Values) (Values, error) {
 		return update, nil
 	}
 
+	// don't really need to make a copy, since Update() operates on a copy of v
 	next := make(Values, len(v))
 	copy(next, v)
 	var idx int
