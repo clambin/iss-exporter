@@ -1,6 +1,9 @@
 name: test
 on:
   push:
+    branches-ignore:
+      - main
+      - test
   pull_request_target:
 permissions:
   contents: read

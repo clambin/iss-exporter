@@ -117,6 +117,7 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 		}); err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
+		logger.Debug("successfully subscribed", "group", group)
 	}
 	return conn, nil
 }
