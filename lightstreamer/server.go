@@ -164,7 +164,6 @@ func (s *Server) subscribe(cmd controlCommand) error {
 
 type session struct {
 	created   time.Time
-	lastWrite time.Time
 	update    chan AdapterUpdate
 	server    *Server
 	logger    *slog.Logger
@@ -268,7 +267,9 @@ func readSessionCommands(r io.ReadCloser) iter.Seq2[sessionCommand, error] {
 	return func(yield func(sessionCommand, error) bool) {
 		for values, err := range readCommands(r) {
 			var cmd sessionCommand
-			cmd, err = parseSessionCommand(values)
+			if err == nil {
+				cmd, err = parseSessionCommand(values)
+			}
 			if !yield(cmd, err) {
 				return
 			}
@@ -310,7 +311,9 @@ func readControlCommands(r io.ReadCloser) iter.Seq2[controlCommand, error] {
 	return func(yield func(controlCommand, error) bool) {
 		for values, err := range readCommands(r) {
 			var cmd controlCommand
-			cmd, err = parseControlCommand(values)
+			if err == nil {
+				cmd, err = parseControlCommand(values)
+			}
 			if !yield(cmd, err) {
 				return
 			}
