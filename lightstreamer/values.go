@@ -4,15 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type Values []string
+
+func (v Values) String() string {
+	return strings.Join(v, ",")
+}
 
 func (v Values) Update(update Values) (Values, error) {
 	if len(v) == 0 {
 		return update, nil
 	}
 
+	// don't really need to make a copy, since Update() operates on a copy of v
 	next := make(Values, len(v))
 	copy(next, v)
 	var idx int

@@ -29,15 +29,10 @@ func main() {
 		opts.Level = slog.LevelDebug
 	}
 
-	groups := []string{
-		"NODE3000005",   // Urine Tank Qty
-		"NODE3000008",   // Waste Water Tank Qty
-		"NODE3000009",   // Clean Water Tank Qty
-		"USLAB000058",   // cabin pressure USA Lab
-		"AIRLOCK000049", // crewlock pressure
+	c, err := collector.NewCollector(ctx, slog.New(slog.NewTextHandler(os.Stderr, &opts)))
+	if err != nil {
+		panic(err)
 	}
-
-	c := collector.NewCollector(ctx, groups, slog.New(slog.NewTextHandler(os.Stderr, &opts)))
 	prometheus.MustRegister(c)
 
 	http.Handle("/metrics", promhttp.Handler())
