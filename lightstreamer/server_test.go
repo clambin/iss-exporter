@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,8 +162,12 @@ func TestServer_Subscribe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
-			c := NewClient("set", "cid", l)
-			c.ServerURL = ts.URL
+			c := NewClient(
+				WithLogger(l),
+				WithServerURL(ts.URL),
+				WithAdapterSet("set"),
+				WithCID("cid"),
+			)
 			conn, err := c.Connect(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -204,12 +209,16 @@ func TestAdapter_Run(t *testing.T) {
 	ch := make(chan AdapterUpdate)
 	_, _, _ = adapter.Subscribe(ch, 1, "", "")
 
-	got := <-ch
-	if got.SubscriptionID != 1 {
-		t.Errorf("got %d, want 1", got.SubscriptionID)
-	}
-	if got.Values.String() != "10" {
-		t.Errorf("got %s, want %s", got.Values.String(), "10")
+	for want := range 5 {
+		got := <-ch
+
+		if got.SubscriptionID != 1 {
+			t.Errorf("got %d, want 1", got.SubscriptionID)
+		}
+
+		if got.Values.String() != strconv.Itoa(want+1) {
+			t.Errorf("got %s, want %s", got.Values.String(), "1")
+		}
 	}
 }
 
@@ -234,12 +243,14 @@ func (t *timedAdapter) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(cmp.Or(interval, time.Second))
 	defer ticker.Stop()
 
+	var value int
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			t.publish(Values{"10"})
+			value++
+			t.publish(Values{strconv.Itoa(value)})
 		}
 	}
 }

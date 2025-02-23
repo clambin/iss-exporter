@@ -31,7 +31,7 @@ var (
 )
 
 type Collector struct {
-	connection *lightstreamer.ClientConnection
+	connection *lightstreamer.Session
 	Logger     *slog.Logger
 }
 
@@ -94,8 +94,11 @@ var groups = []string{
 
 var schema = []string{"Value"}
 
-func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientConnection, error) {
-	client := lightstreamer.NewClient("ISSLIVE", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", logger)
+func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.Session, error) {
+	client := lightstreamer.NewClient(
+		lightstreamer.WithLogger(logger),
+		lightstreamer.WithAdapterSet("ISSLIVE"),
+	)
 	conn, err := client.Connect(ctx)
 	if err != nil {
 		return nil, err

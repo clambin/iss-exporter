@@ -1,14 +1,15 @@
 package lightstreamer
 
 import (
-	"bufio"
 	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/clambin/iss-exporter/lightstreamer/internal/client"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,43 +19,94 @@ import (
 )
 
 const (
-	serverURL = "https://push.lightstreamer.com/lightstreamer"
-	lsProto   = "TLCP-2.1.0"
+	serverURL     = "https://push.lightstreamer.com/lightstreamer"
+	lsProto       = "TLCP-2.1.0"
+	timeDiffLimit = 5
 )
 
 type Client struct {
 	logger     *slog.Logger
 	HTTPClient *http.Client
-	Set        string
-	CID        string
 	ServerURL  string
+	loginArgs  url.Values
 }
 
-func NewClient(set string, cid string, logger *slog.Logger) *Client {
-	return &Client{
-		Set:        set,
-		CID:        cid,
+type ClientOption func(*Client)
+
+func NewClient(opt ...ClientOption) *Client {
+	loginArgs := make(url.Values)
+	loginArgs.Set("LS_cid", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg")
+
+	c := Client{
 		HTTPClient: http.DefaultClient,
 		ServerURL:  serverURL,
-		logger:     logger,
+		logger:     slog.Default(),
+		loginArgs:  loginArgs,
+	}
+	for _, o := range opt {
+		o(&c)
+	}
+
+	return &c
+}
+
+func WithLogger(logger *slog.Logger) ClientOption {
+	return func(c *Client) {
+		c.logger = logger
 	}
 }
 
-func (s *Client) Connect(ctx context.Context) (*ClientConnection, error) {
-	clientConnection := ClientConnection{
+func WithServerURL(url string) ClientOption {
+	return func(c *Client) {
+		c.ServerURL = url
+	}
+}
+
+func WithHTTPClient(client *http.Client) ClientOption {
+	return func(c *Client) {
+		c.HTTPClient = client
+	}
+}
+
+func WithAdapterSet(adapterSet string) ClientOption {
+	return func(c *Client) {
+		c.loginArgs.Set("LS_adapter_set", adapterSet)
+	}
+}
+
+func WithCID(cid string) ClientOption {
+	return func(c *Client) {
+		c.loginArgs.Set("LS_cid", cid)
+	}
+}
+
+func WithCredentials(username, password string) ClientOption {
+	return func(c *Client) {
+		c.loginArgs.Set("LS_user", username)
+		c.loginArgs.Set("LS_password", password)
+	}
+}
+
+func WithContentLength(length uint) ClientOption {
+	return func(c *Client) {
+		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
+	}
+}
+
+func (s *Client) Connect(ctx context.Context) (*Session, error) {
+	clientSession := Session{
 		logger:        s.logger,
 		subscriptions: make(map[int]*subscription),
 		serverURL:     cmp.Or(s.ServerURL, serverURL),
 		httpClient:    cmp.Or(s.HTTPClient, http.DefaultClient),
 	}
 
-	r, err := clientConnection.connect(ctx, s.Set, s.CID)
-	if err != nil {
-		return nil, err
-	}
-	go clientConnection.handleConnection(r)
-	return &clientConnection, nil
+	err := clientSession.run(ctx, s.loginArgs)
+	// TODO: wait for connection to be established here?
+	return &clientSession, err
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 type subscription struct {
 	last   map[int]Values
@@ -75,7 +127,9 @@ func (s *subscription) Update(item int, values Values) error {
 	return err
 }
 
-type ClientConnection struct {
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type Session struct {
 	logger         *slog.Logger
 	httpClient     *http.Client
 	subscriptions  map[int]*subscription
@@ -85,18 +139,19 @@ type ClientConnection struct {
 	keepAliveTime  int
 	requestID      int
 	subscriptionID int
+	createdTime    time.Time
 	lock           sync.RWMutex
 }
 
-func (c *ClientConnection) Connected() bool {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-	return c.sessionID != ""
+func (s *Session) Connected() bool {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	return s.sessionID != ""
 }
 
-func (c *ClientConnection) WaitOnConnection(ctx context.Context, duration time.Duration) error {
+func (s *Session) WaitOnConnection(ctx context.Context, duration time.Duration) error {
 	start := time.Now()
-	for !c.Connected() {
+	for !s.Connected() {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -109,129 +164,139 @@ func (c *ClientConnection) WaitOnConnection(ctx context.Context, duration time.D
 	return nil
 }
 
-func (c *ClientConnection) connect(ctx context.Context, set string, cid string) (io.ReadCloser, error) {
-	parameters := make(url.Values)
-	parameters.Set("LS_adapter_set", set)
-	parameters.Set("LS_cid", cid)
+func (s *Session) run(ctx context.Context, loginArgs url.Values) error {
+	r, err := s.connect(ctx, loginArgs)
+	if err == nil {
+		go s.handleSession(ctx, r)
+	}
+	return err
+}
 
-	req, err := c.makeRequest(ctx, "create_session", parameters)
+func (s *Session) connect(ctx context.Context, loginArgs url.Values) (io.ReadCloser, error) {
+	resp, err := s.call(ctx, "create_session", loginArgs)
 	if err != nil {
 		return nil, err
 	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		body = bytes.TrimSuffix(body, []byte("\n"))
-		body = bytes.TrimSuffix(body, []byte("\r"))
-		if len(body) > 0 {
-			return nil, fmt.Errorf("%s (%s)", resp.Status, string(body))
-		}
-		return nil, fmt.Errorf("http: %s", resp.Status)
-	}
-
+	s.createdTime = time.Now()
 	return resp.Body, nil
 }
 
-func (c *ClientConnection) handleConnection(r io.ReadCloser) {
-	defer func() { _ = r.Close() }()
-	lines := bufio.NewScanner(r)
-	for lines.Scan() {
-		parts := strings.Split(lines.Text(), ",")
-		if len(parts) == 0 {
-			continue
-		}
-		var err error
-		switch parts[0] {
-		case "CONOK":
-			//c.logger.Debug("CONOK", "args", parts[1:])
-			err = c.handleConnectionOK(parts[1:])
-		case "U":
-			//c.logger.Debug("U", "parts", parts[1:])
-			err = c.handleUpdate(parts[1:])
-		case "NOOP", "PROBE", "SYNC", "SERVNAME", "CLIENTIP", "CONS", "SUBOK", "CONF", "PROG":
-			//c.logger.Debug(parts[0], "params", parts[1:])
+func (s *Session) handleSession(ctx context.Context, r io.ReadCloser) {
+	for r != nil {
+		select {
+		case <-ctx.Done():
+			return
 		default:
-			c.logger.Debug(parts[0], "params", parts[1:])
 		}
 
+		rebind, err := s.handleConnection(r)
 		if err != nil {
-			c.logger.Warn("error processing "+parts[0], "err", err)
+			s.logger.Error("error while handling connection", "err", err)
+			return
+		}
+		r = nil
+		if rebind {
+			s.logger.Debug("rebinding connection")
+			if r, err = s.rebind(ctx); err != nil {
+				s.logger.Error("error while rebinding connection", "err", err)
+			}
 		}
 	}
 }
 
-func (c *ClientConnection) handleConnectionOK(parts []string) (err error) {
-	// <session-ID>,<request-limit>,<keep-alive>,<control-link>
-	if len(parts) != 4 {
-		return fmt.Errorf("expected 4 arguments, got %d", len(parts))
+func (s *Session) rebind(ctx context.Context) (io.ReadCloser, error) {
+	parameters := make(url.Values)
+	parameters.Set("LS_session", s.sessionID)
+
+	resp, err := s.call(ctx, "bind_session", parameters)
+	if err != nil {
+		return nil, err
 	}
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.sessionID = parts[0]
-	if c.requestLimit, err = strconv.Atoi(parts[1]); err != nil {
-		return fmt.Errorf("invalid request limit %q: %w", parts[1], err)
+	s.createdTime = time.Now()
+	return resp.Body, nil
+}
+
+func (s *Session) handleConnection(r io.ReadCloser) (bool, error) {
+	defer func() { _ = r.Close() }()
+	for msg, err := range client.Messages(r) {
+		if err != nil {
+			return false, fmt.Errorf("parse: %w", err)
+		}
+		s.logger.Debug("< "+string(msg.MessageType), "data", msg.Data)
+		switch data := msg.Data.(type) {
+		case client.CONOKData:
+			err = s.handleConnectionOK(data)
+		case client.UData:
+			err = s.handleUpdate(data)
+		case client.SYNCData:
+			err = s.handleSync(data)
+		case client.LOOPData:
+			s.logger.Debug("session should be rebound", "delay", data.ExpectedDelay)
+			return true, nil
+		case client.ENDData:
+			s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
+		}
+		if err != nil {
+			s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
+		}
 	}
-	if c.keepAliveTime, err = strconv.Atoi(parts[2]); err != nil {
-		return fmt.Errorf("invalid keep alive time %q: %w", parts[2], err)
-	}
-	c.logger.Debug("Connected", "sessionID", c.sessionID)
+	return false, nil
+}
+
+func (s *Session) handleConnectionOK(data client.CONOKData) (err error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.sessionID = data.SessionID
+	s.requestLimit = data.RequestLimit
+	s.keepAliveTime = data.KeepAliveTime
+	s.logger.Debug("Connected", "sessionID", s.sessionID)
 	return nil
 }
 
-func (c *ClientConnection) handleUpdate(parts []string) error {
-	//U,<subscription-ID>,<item>,<field-1-value>|<field-2-value>|...|<field-N-value>
-	if len(parts) < 3 {
-		return fmt.Errorf("expected 3+ arguments, got %d", len(parts))
-	}
-	subID, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return fmt.Errorf("invalid subscription ID %q: %w", parts[0], err)
-	}
-	item, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return fmt.Errorf("invalid item %q: %w", parts[1], err)
-	}
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-	sub, ok := c.subscriptions[subID]
+func (s *Session) handleUpdate(data client.UData) error {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	sub, ok := s.subscriptions[data.SubscriptionID]
 	if !ok {
-		return fmt.Errorf("unknown subscription ID %d", subID)
+		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
 	}
-	return sub.Update(item, parts[2:])
+	return sub.Update(data.Item, data.Values)
 }
 
-func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
-	if !c.Connected() {
+func (s *Session) handleSync(data client.SYNCData) error {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	serverAge := data.SecondsSinceInitialHeader
+	clientAge := int(time.Since(s.createdTime).Seconds())
+	s.logger.Debug("time sync check", "serverAge", serverAge, "clientAge", clientAge)
+	if diff := clientAge - serverAge; math.Abs(float64(diff)) > timeDiffLimit {
+		s.logger.Warn("client/server time difference", "diff", diff)
+	}
+	return nil
+}
+
+func (s *Session) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
+	if !s.Connected() {
 		return errors.New("client is not connected")
 	}
 
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
-	c.requestID++
-	c.subscriptionID++
+	s.requestID++
+	s.subscriptionID++
 	parameters := make(url.Values)
 	parameters.Set("LS_op", "add")
-	parameters.Set("LS_reqId", strconv.Itoa(c.requestID))
-	parameters.Set("LS_session", c.sessionID)
-	parameters.Set("LS_subId", strconv.Itoa(c.subscriptionID))
+	parameters.Set("LS_reqId", strconv.Itoa(s.requestID))
+	parameters.Set("LS_session", s.sessionID)
+	parameters.Set("LS_subId", strconv.Itoa(s.subscriptionID))
 	parameters.Set("LS_data_adapter", adapter)
 	parameters.Set("LS_group", group)
 	parameters.Set("LS_schema", strings.Join(schema, " "))
 	parameters.Set("LS_mode", "MERGE")
 	//parameters.Set("LS_requested_max_frequency", "0.1") // TODO: make this is a parameter
 
-	req, err := c.makeRequest(ctx, "control", parameters)
-	if err != nil {
-		return err
-	}
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := s.call(ctx, "control", parameters)
 	if err != nil {
 		return err
 	}
@@ -247,7 +312,7 @@ func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group 
 
 	switch parts[0] {
 	case "REQOK":
-		c.subscriptions[c.subscriptionID] = &subscription{update: f}
+		s.subscriptions[s.subscriptionID] = &subscription{update: f}
 		return nil
 	case "REQERR":
 		if len(parts) != 4 {
@@ -259,11 +324,31 @@ func (c *ClientConnection) Subscribe(ctx context.Context, adapter string, group 
 	}
 }
 
-func (c *ClientConnection) makeRequest(ctx context.Context, endpoint string, values url.Values) (*http.Request, error) {
+func (s *Session) call(ctx context.Context, endpoint string, values url.Values) (*http.Response, error) {
+	req, err := s.makeRequest(ctx, endpoint, values)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if body = bytes.TrimSuffix(body, []byte("\r\n")); len(body) > 0 {
+			return nil, fmt.Errorf("%s (%s)", resp.Status, string(body))
+		}
+		return nil, fmt.Errorf("http: %s", resp.Status)
+	}
+	return resp, nil
+}
+
+func (s *Session) makeRequest(ctx context.Context, endpoint string, values url.Values) (*http.Request, error) {
 	args := make(url.Values)
 	args.Set("LS_protocol", lsProto)
 
-	reqURL := c.serverURL + "/" + endpoint + ".txt?" + args.Encode()
+	reqURL := s.serverURL + "/" + endpoint + ".txt?" + args.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, err

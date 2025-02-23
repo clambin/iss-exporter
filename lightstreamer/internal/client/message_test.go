@@ -1,0 +1,311 @@
+package client
+
+import (
+	"io"
+	"math"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestParseMessage(t *testing.T) {
+	testData := []struct {
+		name  string
+		input string
+		pass  bool
+		want  Message
+	}{
+		{
+			name:  "CONOK",
+			input: "CONOK,sessionID,50000,5000,*",
+			pass:  true,
+			want:  Message{"CONOK", CONOKData{"sessionID", 50000, 5000, "*"}},
+		},
+		{
+			name:  "CONOK (too short)",
+			input: "CONOK",
+			pass:  false,
+		},
+		{
+			name:  "CONOK (bad number)",
+			input: "CONOK,sessionID,a,5000,*",
+			pass:  false,
+		},
+		{
+			name:  "CONOK (bad number)",
+			input: "CONOK,sessionID,50000,a,*",
+			pass:  false,
+		},
+		{
+			name:  "SERVNAME",
+			input: "SERVNAME,my server",
+			pass:  true,
+			want:  Message{"SERVNAME", SERVNAMEData{"my server"}},
+		},
+		{
+			name:  "SERVNAME (too short)",
+			input: "SERVNAME",
+			pass:  false,
+		},
+		{
+			name:  "CLIENTIP",
+			input: "CLIENTIP,192.168.0.1",
+			pass:  true,
+			want:  Message{"CLIENTIP", CLIENTIPData{"192.168.0.1"}},
+		},
+		{
+			name:  "CLIENTIP (too short)",
+			input: "CLIENTIP",
+			pass:  false,
+		},
+		{
+			name:  "NOOP",
+			input: "NOOP,ignored text",
+			pass:  true,
+			want:  Message{"NOOP", NOOPData{Preamble: []string{"ignored text"}}},
+		},
+		{
+			name:  "CONS (unlimited)",
+			input: "CONS,unlimited",
+			pass:  true,
+			want:  Message{"CONS", CONSData{math.Inf(1)}},
+		},
+		{
+			name:  "CONS (limited)",
+			input: "CONS,5000",
+			pass:  true,
+			want:  Message{"CONS", CONSData{5000}},
+		},
+		{
+			name:  "CONS (too short)",
+			input: "CONS",
+			pass:  false,
+		},
+		{
+			name:  "CONS (bad number)",
+			input: "CONS,a",
+			pass:  false,
+		},
+		{
+			name:  "SYNC",
+			input: "SYNC,5000",
+			pass:  true,
+			want:  Message{"SYNC", SYNCData{5000}},
+		},
+		{
+			name:  "SYNC (bad number)",
+			input: "SYNC,a",
+			pass:  false,
+		},
+		{
+			name:  "SYNC (too short)",
+			input: "SYNC",
+			pass:  false,
+		},
+		{
+			name:  "PROBE",
+			input: "PROBE",
+			pass:  true,
+			want:  Message{"PROBE", nil},
+		},
+		{
+			name:  "LOOP",
+			input: "LOOP,0",
+			pass:  true,
+			want:  Message{"LOOP", LOOPData{ExpectedDelay: 0}},
+		},
+		{
+			name:  "LOOP (too short)",
+			input: "LOOP",
+			pass:  false,
+		},
+		{
+			name:  "LOOP (bad number)",
+			input: "LOOP,a",
+			pass:  false,
+		},
+		{
+			name:  "END",
+			input: "END,10,done",
+			pass:  true,
+			want:  Message{"END", ENDData{10, "done"}},
+		},
+		{
+			name:  "END (too short)",
+			input: "END",
+			pass:  false,
+		},
+		{
+			name:  "END (bad number)",
+			input: "END,a,error",
+			pass:  false,
+		},
+		{
+			name:  "U",
+			input: "U,100,1,1,2,3",
+			pass:  true,
+			want:  Message{"U", UData{100, 1, []string{"1", "2", "3"}}},
+		},
+		{
+			name:  "U (no data)",
+			input: "U,100,1",
+			pass:  true,
+			want:  Message{"U", UData{100, 1, []string{}}},
+		},
+		{
+			name:  "U (too short)",
+			input: "U",
+			pass:  false,
+		},
+		{
+			name:  "U (invalid subscription ID)",
+			input: "U,a,1",
+			pass:  false,
+		},
+		{
+			name:  "U (invalid item number)",
+			input: "U,100,a",
+			pass:  false,
+		},
+		{
+			name:  "SUBOK",
+			input: "SUBOK,100,1,5",
+			pass:  true,
+			want:  Message{"SUBOK", SUBOKData{100, 1, 5}},
+		},
+		{
+			name:  "SUBOK (too short)",
+			input: "SUBOK",
+			pass:  false,
+		},
+		{
+			name:  "SUBOK (invalid subscription ID)",
+			input: "SUBOK,a,1,5",
+			pass:  false,
+		},
+		{
+			name:  "SUBOK (invalid items)",
+			input: "SUBOK,1,a,5",
+			pass:  false,
+		},
+		{
+			name:  "SUBOK (invalid fields)",
+			input: "SUBOK,1,1,a",
+			pass:  false,
+		},
+		{
+			name:  "CONF (filtered)",
+			input: "CONF,100,100,filtered",
+			pass:  true,
+			want:  Message{"CONF", CONFData{100, 100, true}},
+		},
+		{
+			name:  "CONF (unfiltered)",
+			input: "CONF,100,100,unfiltered",
+			pass:  true,
+			want:  Message{"CONF", CONFData{100, 100, false}},
+		},
+		{
+			name:  "CONF (unlimited)",
+			input: "CONF,100,unlimited,unfiltered",
+			pass:  true,
+			want:  Message{"CONF", CONFData{100, math.Inf(1), false}},
+		},
+		{
+			name:  "CONF (too short)",
+			input: "CONF",
+			pass:  false,
+		},
+		{
+			name:  "CONF (invalid subscription ID)",
+			input: "CONF,a,unlimited,unfiltered",
+			pass:  false,
+		},
+		{
+			name:  "CONF (invalid bandwidth)",
+			input: "CONF,100,a,unfiltered",
+			pass:  false,
+		},
+		{
+			name:  "CONF (invalid filter)",
+			input: "CONF,100,unlimited,a",
+			pass:  false,
+		},
+		{
+			name:  "PROG",
+			input: "PROG,100",
+			pass:  true,
+			want:  Message{"PROG", PROGData{100}},
+		},
+		{
+			name:  "PROG (too short)",
+			input: "PROG",
+			pass:  false,
+		},
+		{
+			name:  "PROG (invalid number)",
+			input: "PROG,a",
+			pass:  false,
+		},
+		{
+			name:  "unsupported",
+			input: "unsupported",
+			pass:  true,
+			want:  Message{"unsupported", UnsupportedData{[]string{}}},
+		},
+	}
+
+	for _, td := range testData {
+		t.Run(td.name, func(t *testing.T) {
+			got, err := ParseMessage(td.input)
+			if td.pass != (err == nil) {
+				t.Errorf("got error %v, want error %v", got, err)
+			}
+			if reflect.DeepEqual(got, td.want) == false {
+				t.Errorf("got %v want %v", got, td.want)
+			}
+		})
+	}
+}
+
+func TestMessages(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []Message
+	}{
+		{
+			name:  "single",
+			input: "CONOK,sessionID,500,5000,*\r\n",
+			want:  []Message{{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}}},
+		},
+		{
+			name:  "multiple",
+			input: "CONOK,sessionID,500,5000,*\r\nPROBE\r\nEND,1,ok\r\n",
+			want: []Message{
+				{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}},
+				{"PROBE", nil},
+				{"END", ENDData{1, "ok"}},
+			},
+		},
+		{
+			name:  "stop on invalid",
+			input: "CONOK,sessionID,500,5000,*\r\nSYNC,a\r\nEND,1,ok\r\n",
+			want:  []Message{{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []Message
+			for msg, err := range Messages(io.NopCloser(strings.NewReader(tt.input))) {
+				if err == nil {
+					got = append(got, msg)
+				}
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v want %v", got, tt.want)
+			}
+		})
+	}
+}
