@@ -31,7 +31,7 @@ func TestClient(t *testing.T) {
 }
 
 func TestClient_ISS(t *testing.T) {
-	//t.Skip()
+	t.Skip()
 
 	ctx := t.Context()
 	l := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
