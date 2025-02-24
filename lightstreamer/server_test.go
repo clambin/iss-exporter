@@ -162,22 +162,16 @@ func TestServer_Subscribe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
-			c := NewClient(
+			clientSession, err := NewClientSession(
+				t.Context(),
 				WithLogger(l),
 				WithServerURL(ts.URL),
 				WithAdapterSet("set"),
 				WithCID("cid"),
 			)
-			conn, err := c.Connect(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = conn.waitOnConnection(ctx, 5*time.Second); err != nil {
-				t.Fatal(err)
-			}
 
 			var rcvd atomic.Bool
-			err = conn.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {
+			err = clientSession.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {
 				rcvd.Store(true)
 			})
 			if tt.wantErr != (err != nil) {

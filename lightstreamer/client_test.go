@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,20 +19,19 @@ func TestClient(t *testing.T) {
 	ts := httptest.NewServer(NewServer("mySet", "myCID", nil, l))
 	t.Cleanup(ts.Close)
 
-	c := NewClient(
+	c, err := NewClientSession(
+		t.Context(),
 		WithLogger(l),
 		WithServerURL(ts.URL),
 		WithHTTPClient(ts.Client()),
 		WithAdapterSet("mySet"),
 		WithCID("myCID"),
 	)
-	ctx := t.Context()
-	conn, err := c.Connect(ctx)
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	if err = conn.waitOnConnection(ctx, 5*time.Second); err != nil {
-		t.Fatalf("timeout waiting on session: %v", err)
+	if !c.Connected() {
+		t.Error("failed to connect")
 	}
 }
 
@@ -48,13 +48,14 @@ func TestClient_Timeout(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	c := NewClient(
+	_, err := NewClientSession(
+		t.Context(),
 		WithLogger(l),
 		WithServerURL(ts.URL),
 		WithHTTPClient(ts.Client()),
 		WithConnectTimeout(time.Second),
 	)
-	if _, err := c.Connect(t.Context()); err == nil {
+	if err == nil {
 		t.Error("expected timeout error")
 	}
 }
@@ -85,11 +86,11 @@ func TestClient_Rebind(t *testing.T) {
 		}
 	}))
 	t.Cleanup(ts.Close)
-	c := NewClient(
+	_, err := NewClientSession(
+		t.Context(),
 		WithLogger(l),
 		WithServerURL(ts.URL),
 	)
-	_, err := c.Connect(t.Context())
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
@@ -104,31 +105,34 @@ func TestClient_Rebind(t *testing.T) {
 	}
 }
 
-func TestClient_ISS(t *testing.T) {
-	t.Skip()
-
-	ctx := t.Context()
-	l := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	c := NewClient(
-		WithLogger(l),
-		WithAdapterSet("ISSLIVE"),
-	)
-	conn, err := c.Connect(ctx)
-	if err != nil {
-		t.Fatal(err)
+func Test_lsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		response *http.Response
+		want     string
+	}{
+		{
+			name:     "lightstreamer error",
+			response: &http.Response{Body: io.NopCloser(strings.NewReader("8: Configured maximum number of actively started sessions reached.\r\n"))},
+			want:     "lightstreamer: 8: Configured maximum number of actively started sessions reached.",
+		},
+		{
+			name:     "http error w/ status text",
+			response: &http.Response{StatusCode: http.StatusBadRequest, Status: "missing LS_foo", Body: io.NopCloser(strings.NewReader(""))},
+			want:     "http: 400 missing LS_foo",
+		},
+		{
+			name:     "http error",
+			response: &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(""))},
+			want:     "http: 400 Bad Request",
+		},
 	}
 
-	if err = conn.waitOnConnection(ctx, 5*time.Second); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := lsError(tt.response); err.Error() != tt.want {
+				t.Errorf("lsError() error = %v, wantErr %v", err.Error(), tt.want)
+			}
+		})
 	}
-
-	for _, group := range []string{"USLAB000058"} {
-		if err = conn.Subscribe(ctx, "DEFAULT", group, []string{"Value"}, 0.1, func(item int, values Values) {
-			l.Info(group, "value", values)
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	<-ctx.Done()
 }

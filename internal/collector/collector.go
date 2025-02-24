@@ -94,17 +94,17 @@ var groups = []string{
 var schema = []string{"Value"}
 
 func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
-	client := lightstreamer.NewClient(
+	session, err := lightstreamer.NewClientSession(
+		ctx,
 		lightstreamer.WithLogger(logger),
 		lightstreamer.WithAdapterSet("ISSLIVE"),
 	)
-	conn, err := client.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, group := range groups {
-		if err = conn.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(item int, values lightstreamer.Values) {
+		if err = session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(item int, values lightstreamer.Values) {
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {
 				logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)
@@ -116,5 +116,5 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
 	}
-	return conn, nil
+	return session, nil
 }

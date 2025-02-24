@@ -2,6 +2,7 @@ package lightstreamer
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,98 +24,6 @@ const (
 	timeDiffLimit = 5
 )
 
-type Client struct {
-	logger         *slog.Logger
-	httpClient     *http.Client
-	loginArgs      url.Values
-	serverURL      string
-	connectTimeout time.Duration
-}
-
-func NewClient(opt ...ClientOption) *Client {
-	c := Client{
-		httpClient:     http.DefaultClient,
-		serverURL:      serverURL,
-		logger:         slog.Default(),
-		loginArgs:      url.Values{"LS_cid": []string{"mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"}},
-		connectTimeout: 5 * time.Second,
-	}
-	for _, o := range opt {
-		o(&c)
-	}
-	return &c
-}
-
-func (c *Client) Connect(ctx context.Context) (*ClientSession, error) {
-	clientSession := ClientSession{
-		logger:         c.logger,
-		subscriptions:  make(map[int]*subscription),
-		serverURL:      c.serverURL,
-		httpClient:     c.httpClient,
-		connectTimeout: c.connectTimeout,
-	}
-
-	if err := clientSession.run(ctx, c.loginArgs); err != nil {
-		return nil, err
-	}
-	return &clientSession, nil
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-type ClientOption func(*Client)
-
-func WithLogger(logger *slog.Logger) ClientOption {
-	return func(c *Client) {
-		c.logger = logger
-	}
-}
-
-func WithServerURL(url string) ClientOption {
-	return func(c *Client) {
-		c.serverURL = url
-	}
-}
-
-func WithHTTPClient(client *http.Client) ClientOption {
-	return func(c *Client) {
-		c.httpClient = client
-	}
-}
-
-func WithAdapterSet(adapterSet string) ClientOption {
-	return func(c *Client) {
-		c.loginArgs.Set("LS_adapter_set", adapterSet)
-	}
-}
-
-func WithCID(cid string) ClientOption {
-	return func(c *Client) {
-		c.loginArgs.Set("LS_cid", cid)
-	}
-}
-
-/*
-func WithCredentials(username, password string) ClientOption {
-	return func(c *Client) {
-		c.loginArgs.Set("LS_user", username)
-		c.loginArgs.Set("LS_password", password)
-	}
-}
-
-func WithContentLength(length uint) ClientOption {
-	return func(c *Client) {
-		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
-	}
-}
-*/
-
-func WithConnectTimeout(timeout time.Duration) ClientOption {
-	return func(c *Client) {
-		c.connectTimeout = timeout
-	}
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 type ClientSession struct {
@@ -122,6 +31,7 @@ type ClientSession struct {
 	connectTimeout time.Duration
 	logger         *slog.Logger
 	httpClient     *http.Client
+	loginArgs      url.Values
 	subscriptions  map[int]*subscription
 	sessionID      string
 	serverURL      string
@@ -130,6 +40,27 @@ type ClientSession struct {
 	requestID      int
 	subscriptionID int
 	lock           sync.RWMutex
+}
+
+func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*ClientSession, error) {
+	clientSession := ClientSession{
+		logger:         slog.Default(),
+		subscriptions:  make(map[int]*subscription),
+		serverURL:      serverURL,
+		httpClient:     http.DefaultClient,
+		connectTimeout: 5 * time.Second,
+		loginArgs:      url.Values{"LS_cid": []string{"mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"}},
+	}
+
+	for _, o := range opts {
+		o(&clientSession)
+	}
+
+	if err := clientSession.run(ctx, clientSession.loginArgs); err != nil {
+		return nil, err
+	}
+	return &clientSession, nil
+
 }
 
 func (s *ClientSession) Connected() bool {
@@ -341,9 +272,64 @@ func lsError(resp *http.Response) error {
 	body = bytes.TrimSuffix(body, []byte("\n"))
 	body = bytes.TrimSuffix(body, []byte("\r"))
 	if len(body) > 0 {
-		return fmt.Errorf("lightstreamer: %s (%s)", resp.Status, string(body))
+		return fmt.Errorf("lightstreamer: %s", string(body))
 	}
-	return fmt.Errorf("http: %s", resp.Status)
+	return fmt.Errorf("http: %d %s", resp.StatusCode, cmp.Or(resp.Status, http.StatusText(resp.StatusCode)))
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type ClientSessionOption func(*ClientSession)
+
+func WithLogger(logger *slog.Logger) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.logger = logger
+	}
+}
+
+func WithServerURL(url string) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.serverURL = url
+	}
+}
+
+func WithHTTPClient(client *http.Client) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.httpClient = client
+	}
+}
+
+func WithAdapterSet(adapterSet string) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.loginArgs.Set("LS_adapter_set", adapterSet)
+	}
+}
+
+func WithCID(cid string) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.loginArgs.Set("LS_cid", cid)
+	}
+}
+
+/*
+func WithCredentials(username, password string) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.loginArgs.Set("LS_user", username)
+		c.loginArgs.Set("LS_password", password)
+	}
+}
+
+func WithContentLength(length uint) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
+	}
+}
+*/
+
+func WithConnectTimeout(timeout time.Duration) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.connectTimeout = timeout
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
