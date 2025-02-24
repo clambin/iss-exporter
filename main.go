@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"github.com/clambin/iss-exporter/internal/collector"
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,5 +37,11 @@ func main() {
 	prometheus.MustRegister(c)
 
 	http.Handle("/metrics", promhttp.Handler())
-	_ = http.ListenAndServe(*addr, nil)
+	go func() {
+		if err = http.ListenAndServe(*addr, nil); !errors.Is(err, http.ErrServerClosed) {
+			panic(err)
+		}
+	}()
+
+	<-ctx.Done()
 }
