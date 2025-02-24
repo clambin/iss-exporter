@@ -172,7 +172,7 @@ func TestServer_Subscribe(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = conn.WaitOnConnection(ctx, 5*time.Second); err != nil {
+			if err = conn.waitOnConnection(ctx, 5*time.Second); err != nil {
 				t.Fatal(err)
 			}
 

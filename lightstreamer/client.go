@@ -25,23 +25,23 @@ const (
 )
 
 type Client struct {
-	logger     *slog.Logger
-	HTTPClient *http.Client
-	ServerURL  string
-	loginArgs  url.Values
+	logger         *slog.Logger
+	HTTPClient     *http.Client
+	ServerURL      string
+	loginArgs      url.Values
+	connectTimeout time.Duration
 }
-
-type ClientOption func(*Client)
 
 func NewClient(opt ...ClientOption) *Client {
 	loginArgs := make(url.Values)
 	loginArgs.Set("LS_cid", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg")
 
 	c := Client{
-		HTTPClient: http.DefaultClient,
-		ServerURL:  serverURL,
-		logger:     slog.Default(),
-		loginArgs:  loginArgs,
+		HTTPClient:     http.DefaultClient,
+		ServerURL:      serverURL,
+		logger:         slog.Default(),
+		loginArgs:      loginArgs,
+		connectTimeout: 5 * time.Second,
 	}
 	for _, o := range opt {
 		o(&c)
@@ -49,6 +49,24 @@ func NewClient(opt ...ClientOption) *Client {
 
 	return &c
 }
+
+func (c *Client) Connect(ctx context.Context) (*ClientSession, error) {
+	clientSession := ClientSession{
+		logger:        c.logger,
+		subscriptions: make(map[int]*subscription),
+		serverURL:     cmp.Or(c.ServerURL, serverURL),
+		httpClient:    cmp.Or(c.HTTPClient, http.DefaultClient),
+	}
+
+	if err := clientSession.run(ctx, c.loginArgs); err != nil {
+		return nil, err
+	}
+	return &clientSession, clientSession.waitOnConnection(ctx, c.connectTimeout)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type ClientOption func(*Client)
 
 func WithLogger(logger *slog.Logger) ClientOption {
 	return func(c *Client) {
@@ -93,43 +111,15 @@ func WithContentLength(length uint) ClientOption {
 	}
 }
 
-func (s *Client) Connect(ctx context.Context) (*Session, error) {
-	clientSession := Session{
-		logger:        s.logger,
-		subscriptions: make(map[int]*subscription),
-		serverURL:     cmp.Or(s.ServerURL, serverURL),
-		httpClient:    cmp.Or(s.HTTPClient, http.DefaultClient),
+func WithConnectTimeout(timeout time.Duration) ClientOption {
+	return func(c *Client) {
+		c.connectTimeout = timeout
 	}
-
-	err := clientSession.run(ctx, s.loginArgs)
-	// TODO: wait for connection to be established here?
-	return &clientSession, err
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-type subscription struct {
-	last   map[int]Values
-	update UpdateFunc
-}
-
-type UpdateFunc func(item int, values Values)
-
-func (s *subscription) Update(item int, values Values) error {
-	if s.last == nil {
-		s.last = make(map[int]Values)
-	}
-	next, err := s.last[item].Update(values)
-	if err == nil {
-		s.last[item] = next
-		s.update(item, next)
-	}
-	return err
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-type Session struct {
+type ClientSession struct {
 	logger         *slog.Logger
 	httpClient     *http.Client
 	subscriptions  map[int]*subscription
@@ -143,28 +133,28 @@ type Session struct {
 	lock           sync.RWMutex
 }
 
-func (s *Session) Connected() bool {
+func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Duration) error {
+	subCtx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	for {
+		select {
+		case <-subCtx.Done():
+			return subCtx.Err()
+		case <-time.After(100 * time.Millisecond):
+			if s.Connected() {
+				return nil
+			}
+		}
+	}
+}
+
+func (s *ClientSession) Connected() bool {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.sessionID != ""
 }
 
-func (s *Session) WaitOnConnection(ctx context.Context, duration time.Duration) error {
-	start := time.Now()
-	for !s.Connected() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-			if time.Since(start) > duration {
-				return errors.New("timeout waiting for connection")
-			}
-		}
-	}
-	return nil
-}
-
-func (s *Session) run(ctx context.Context, loginArgs url.Values) error {
+func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
 	r, err := s.connect(ctx, loginArgs)
 	if err == nil {
 		go s.handleSession(ctx, r)
@@ -172,7 +162,7 @@ func (s *Session) run(ctx context.Context, loginArgs url.Values) error {
 	return err
 }
 
-func (s *Session) connect(ctx context.Context, loginArgs url.Values) (io.ReadCloser, error) {
+func (s *ClientSession) connect(ctx context.Context, loginArgs url.Values) (io.ReadCloser, error) {
 	resp, err := s.call(ctx, "create_session", loginArgs)
 	if err != nil {
 		return nil, err
@@ -181,7 +171,7 @@ func (s *Session) connect(ctx context.Context, loginArgs url.Values) (io.ReadClo
 	return resp.Body, nil
 }
 
-func (s *Session) handleSession(ctx context.Context, r io.ReadCloser) {
+func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 	for r != nil {
 		select {
 		case <-ctx.Done():
@@ -204,7 +194,7 @@ func (s *Session) handleSession(ctx context.Context, r io.ReadCloser) {
 	}
 }
 
-func (s *Session) rebind(ctx context.Context) (io.ReadCloser, error) {
+func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
 	parameters := make(url.Values)
 	parameters.Set("LS_session", s.sessionID)
 
@@ -216,13 +206,13 @@ func (s *Session) rebind(ctx context.Context) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func (s *Session) handleConnection(r io.ReadCloser) (bool, error) {
+func (s *ClientSession) handleConnection(r io.ReadCloser) (bool, error) {
 	defer func() { _ = r.Close() }()
 	for msg, err := range client.Messages(r) {
 		if err != nil {
 			return false, fmt.Errorf("parse: %w", err)
 		}
-		s.logger.Debug("< "+string(msg.MessageType), "data", msg.Data)
+		//s.logger.Debug("< "+string(msg.MessageType), "data", msg.Data)
 		switch data := msg.Data.(type) {
 		case client.CONOKData:
 			err = s.handleConnectionOK(data)
@@ -231,7 +221,7 @@ func (s *Session) handleConnection(r io.ReadCloser) (bool, error) {
 		case client.SYNCData:
 			err = s.handleSync(data)
 		case client.LOOPData:
-			s.logger.Debug("session should be rebound", "delay", data.ExpectedDelay)
+			s.logger.Debug("session needs to be rebound", "delay", data.ExpectedDelay)
 			return true, nil
 		case client.ENDData:
 			s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
@@ -243,7 +233,7 @@ func (s *Session) handleConnection(r io.ReadCloser) (bool, error) {
 	return false, nil
 }
 
-func (s *Session) handleConnectionOK(data client.CONOKData) (err error) {
+func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	s.sessionID = data.SessionID
@@ -253,17 +243,7 @@ func (s *Session) handleConnectionOK(data client.CONOKData) (err error) {
 	return nil
 }
 
-func (s *Session) handleUpdate(data client.UData) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	sub, ok := s.subscriptions[data.SubscriptionID]
-	if !ok {
-		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
-	}
-	return sub.Update(data.Item, data.Values)
-}
-
-func (s *Session) handleSync(data client.SYNCData) error {
+func (s *ClientSession) handleSync(data client.SYNCData) error {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	serverAge := data.SecondsSinceInitialHeader
@@ -275,7 +255,17 @@ func (s *Session) handleSync(data client.SYNCData) error {
 	return nil
 }
 
-func (s *Session) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
+func (s *ClientSession) handleUpdate(data client.UData) error {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	sub, ok := s.subscriptions[data.SubscriptionID]
+	if !ok {
+		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
+	}
+	return sub.Update(data.Item, data.Values)
+}
+
+func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
 	if !s.Connected() {
 		return errors.New("client is not connected")
 	}
@@ -324,35 +314,54 @@ func (s *Session) Subscribe(ctx context.Context, adapter string, group string, s
 	}
 }
 
-func (s *Session) call(ctx context.Context, endpoint string, values url.Values) (*http.Response, error) {
-	req, err := s.makeRequest(ctx, endpoint, values)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if body = bytes.TrimSuffix(body, []byte("\r\n")); len(body) > 0 {
-			return nil, fmt.Errorf("%s (%s)", resp.Status, string(body))
-		}
-		return nil, fmt.Errorf("http: %s", resp.Status)
-	}
-	return resp, nil
-}
+var encodedArgs = url.Values{"LS_protocol": []string{lsProto}}.Encode()
 
-func (s *Session) makeRequest(ctx context.Context, endpoint string, values url.Values) (*http.Request, error) {
-	args := make(url.Values)
-	args.Set("LS_protocol", lsProto)
-
-	reqURL := s.serverURL + "/" + endpoint + ".txt?" + args.Encode()
+func (s *ClientSession) call(ctx context.Context, endpoint string, values url.Values) (*http.Response, error) {
+	reqURL := s.serverURL + "/" + endpoint + ".txt?" + encodedArgs
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return req, nil
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, lsError(resp)
+	}
+	return resp, nil
+}
+
+func lsError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	body = bytes.TrimSuffix(body, []byte("\n"))
+	body = bytes.TrimSuffix(body, []byte("\r"))
+	if len(body) > 0 {
+		return fmt.Errorf("lightstreamer: %s (%s)", resp.Status, string(body))
+	}
+	return fmt.Errorf("http: %s", resp.Status)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type subscription struct {
+	last   map[int]Values
+	update UpdateFunc
+}
+
+type UpdateFunc func(item int, values Values)
+
+func (s *subscription) Update(item int, values Values) error {
+	if s.last == nil {
+		s.last = make(map[int]Values)
+	}
+	next, err := s.last[item].Update(values)
+	if err == nil {
+		s.last[item] = next
+		s.update(item, next)
+	}
+	return err
 }

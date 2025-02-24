@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 var (
@@ -31,7 +30,7 @@ var (
 )
 
 type Collector struct {
-	connection *lightstreamer.Session
+	connection *lightstreamer.ClientSession
 	Logger     *slog.Logger
 }
 
@@ -94,7 +93,7 @@ var groups = []string{
 
 var schema = []string{"Value"}
 
-func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.Session, error) {
+func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
 	client := lightstreamer.NewClient(
 		lightstreamer.WithLogger(logger),
 		lightstreamer.WithAdapterSet("ISSLIVE"),
@@ -102,10 +101,6 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 	conn, err := client.Connect(ctx)
 	if err != nil {
 		return nil, err
-	}
-	for !conn.Connected() {
-		logger.Debug("waiting for connection")
-		time.Sleep(100 * time.Millisecond)
 	}
 
 	for _, group := range groups {
@@ -120,7 +115,6 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 		}); err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
-		logger.Debug("successfully subscribed", "group", group)
 	}
 	return conn, nil
 }
