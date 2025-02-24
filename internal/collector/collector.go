@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 )
 
 var (
@@ -31,7 +30,7 @@ var (
 )
 
 type Collector struct {
-	connection *lightstreamer.ClientConnection
+	connection *lightstreamer.ClientSession
 	Logger     *slog.Logger
 }
 
@@ -39,7 +38,7 @@ func NewCollector(ctx context.Context, logger *slog.Logger) (c *Collector, err e
 	c = &Collector{
 		Logger: logger,
 	}
-	c.connection, err = lightStreamerFeed(ctx, logger)
+	c.connection, err = lightStreamerClientSession(ctx, logger)
 	return c, err
 }
 
@@ -94,19 +93,18 @@ var groups = []string{
 
 var schema = []string{"Value"}
 
-func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientConnection, error) {
-	client := lightstreamer.NewClient("ISSLIVE", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg", logger)
-	conn, err := client.Connect(ctx)
+func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
+	session, err := lightstreamer.NewClientSession(
+		ctx,
+		lightstreamer.WithLogger(logger),
+		lightstreamer.WithAdapterSet("ISSLIVE"),
+	)
 	if err != nil {
 		return nil, err
 	}
-	for !conn.Connected() {
-		logger.Debug("waiting for connection")
-		time.Sleep(100 * time.Millisecond)
-	}
 
 	for _, group := range groups {
-		if err = conn.Subscribe(ctx, "DEFAULT", group, schema, func(item int, values lightstreamer.Values) {
+		if err = session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(item int, values lightstreamer.Values) {
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {
 				logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)
@@ -117,7 +115,6 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 		}); err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
-		logger.Debug("successfully subscribed", "group", group)
 	}
-	return conn, nil
+	return session, nil
 }

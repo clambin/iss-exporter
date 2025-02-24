@@ -134,10 +134,10 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			} else {
 				_, _ = io.WriteString(w, "REQERR,"+cmd.RequestID+",1,"+err.Error()+"\n")
 			}
-		default:
 			// this is already handled by err != nil
-			http.Error(w, "unsupported operation: "+string(cmd.CommandType), http.StatusBadRequest)
-			return
+			//default:
+			//	http.Error(w, "unsupported operation: "+string(cmd.CommandType), http.StatusBadRequest)
+			//	return
 		}
 	}
 }
@@ -190,7 +190,7 @@ func (s *session) serve(ctx context.Context, r io.ReadCloser) error {
 	syncTicker := time.NewTicker(20 * time.Second)
 	defer syncTicker.Stop()
 
-	probeTicker := time.NewTicker(time.Second)
+	probeTicker := time.NewTicker(5 * time.Second)
 	defer probeTicker.Stop()
 
 	for {
