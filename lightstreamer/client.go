@@ -2,7 +2,6 @@ package lightstreamer
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -26,42 +25,39 @@ const (
 
 type Client struct {
 	logger         *slog.Logger
-	HTTPClient     *http.Client
-	ServerURL      string
+	httpClient     *http.Client
 	loginArgs      url.Values
+	serverURL      string
 	connectTimeout time.Duration
 }
 
 func NewClient(opt ...ClientOption) *Client {
-	loginArgs := make(url.Values)
-	loginArgs.Set("LS_cid", "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg")
-
 	c := Client{
-		HTTPClient:     http.DefaultClient,
-		ServerURL:      serverURL,
+		httpClient:     http.DefaultClient,
+		serverURL:      serverURL,
 		logger:         slog.Default(),
-		loginArgs:      loginArgs,
+		loginArgs:      url.Values{"LS_cid": []string{"mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"}},
 		connectTimeout: 5 * time.Second,
 	}
 	for _, o := range opt {
 		o(&c)
 	}
-
 	return &c
 }
 
 func (c *Client) Connect(ctx context.Context) (*ClientSession, error) {
 	clientSession := ClientSession{
-		logger:        c.logger,
-		subscriptions: make(map[int]*subscription),
-		serverURL:     cmp.Or(c.ServerURL, serverURL),
-		httpClient:    cmp.Or(c.HTTPClient, http.DefaultClient),
+		logger:         c.logger,
+		subscriptions:  make(map[int]*subscription),
+		serverURL:      c.serverURL,
+		httpClient:     c.httpClient,
+		connectTimeout: c.connectTimeout,
 	}
 
 	if err := clientSession.run(ctx, c.loginArgs); err != nil {
 		return nil, err
 	}
-	return &clientSession, clientSession.waitOnConnection(ctx, c.connectTimeout)
+	return &clientSession, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -76,13 +72,13 @@ func WithLogger(logger *slog.Logger) ClientOption {
 
 func WithServerURL(url string) ClientOption {
 	return func(c *Client) {
-		c.ServerURL = url
+		c.serverURL = url
 	}
 }
 
 func WithHTTPClient(client *http.Client) ClientOption {
 	return func(c *Client) {
-		c.HTTPClient = client
+		c.httpClient = client
 	}
 }
 
@@ -98,6 +94,7 @@ func WithCID(cid string) ClientOption {
 	}
 }
 
+/*
 func WithCredentials(username, password string) ClientOption {
 	return func(c *Client) {
 		c.loginArgs.Set("LS_user", username)
@@ -110,6 +107,7 @@ func WithContentLength(length uint) ClientOption {
 		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
 	}
 }
+*/
 
 func WithConnectTimeout(timeout time.Duration) ClientOption {
 	return func(c *Client) {
@@ -120,6 +118,8 @@ func WithConnectTimeout(timeout time.Duration) ClientOption {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 type ClientSession struct {
+	createdTime    time.Time
+	connectTimeout time.Duration
 	logger         *slog.Logger
 	httpClient     *http.Client
 	subscriptions  map[int]*subscription
@@ -129,23 +129,7 @@ type ClientSession struct {
 	keepAliveTime  int
 	requestID      int
 	subscriptionID int
-	createdTime    time.Time
 	lock           sync.RWMutex
-}
-
-func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Duration) error {
-	subCtx, cancel := context.WithTimeout(ctx, duration)
-	defer cancel()
-	for {
-		select {
-		case <-subCtx.Done():
-			return subCtx.Err()
-		case <-time.After(100 * time.Millisecond):
-			if s.Connected() {
-				return nil
-			}
-		}
-	}
 }
 
 func (s *ClientSession) Connected() bool {
@@ -159,7 +143,7 @@ func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
 	if err == nil {
 		go s.handleSession(ctx, r)
 	}
-	return err
+	return s.waitOnConnection(ctx, s.connectTimeout)
 }
 
 func (s *ClientSession) connect(ctx context.Context, loginArgs url.Values) (io.ReadCloser, error) {
@@ -189,6 +173,21 @@ func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 			s.logger.Debug("rebinding connection")
 			if r, err = s.rebind(ctx); err != nil {
 				s.logger.Error("error while rebinding connection", "err", err)
+			}
+		}
+	}
+}
+
+func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Duration) error {
+	subCtx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+	for {
+		select {
+		case <-subCtx.Done():
+			return subCtx.Err()
+		case <-time.After(100 * time.Millisecond):
+			if s.Connected() {
+				return nil
 			}
 		}
 	}
@@ -265,7 +264,7 @@ func (s *ClientSession) handleUpdate(data client.UData) error {
 	return sub.Update(data.Item, data.Values)
 }
 
-func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, f UpdateFunc) error {
+func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64, f UpdateFunc) error {
 	if !s.Connected() {
 		return errors.New("client is not connected")
 	}
@@ -284,7 +283,9 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 	parameters.Set("LS_group", group)
 	parameters.Set("LS_schema", strings.Join(schema, " "))
 	parameters.Set("LS_mode", "MERGE")
-	//parameters.Set("LS_requested_max_frequency", "0.1") // TODO: make this is a parameter
+	if maxFrequency > 0 {
+		parameters.Set("LS_requested_max_frequency", strconv.FormatFloat(maxFrequency, 'f', -1, 64))
+	}
 
 	resp, err := s.call(ctx, "control", parameters)
 	if err != nil {

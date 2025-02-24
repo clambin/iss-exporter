@@ -112,7 +112,6 @@ func TestClient_ISS(t *testing.T) {
 	c := NewClient(
 		WithLogger(l),
 		WithAdapterSet("ISSLIVE"),
-		WithContentLength(100),
 	)
 	conn, err := c.Connect(ctx)
 	if err != nil {
@@ -124,7 +123,7 @@ func TestClient_ISS(t *testing.T) {
 	}
 
 	for _, group := range []string{"USLAB000058"} {
-		if err = conn.Subscribe(ctx, "DEFAULT", group, []string{"Value"}, func(item int, values Values) {
+		if err = conn.Subscribe(ctx, "DEFAULT", group, []string{"Value"}, 0.1, func(item int, values Values) {
 			l.Info(group, "value", values)
 		}); err != nil {
 			t.Fatal(err)

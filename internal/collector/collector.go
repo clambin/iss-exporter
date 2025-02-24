@@ -104,7 +104,7 @@ func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer
 	}
 
 	for _, group := range groups {
-		if err = conn.Subscribe(ctx, "DEFAULT", group, schema, func(item int, values lightstreamer.Values) {
+		if err = conn.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(item int, values lightstreamer.Values) {
 			value, err := strconv.ParseFloat(values[0], 64)
 			if err != nil {
 				logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)

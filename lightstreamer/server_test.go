@@ -177,7 +177,7 @@ func TestServer_Subscribe(t *testing.T) {
 			}
 
 			var rcvd atomic.Bool
-			err = conn.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, func(item int, values Values) {
+			err = conn.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {
 				rcvd.Store(true)
 			})
 			if tt.wantErr != (err != nil) {

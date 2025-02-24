@@ -11,17 +11,17 @@ import (
 )
 
 type Message struct {
-	MessageType MessageType
 	Data        any
+	MessageType MessageType
 }
 
 type MessageType string
 
 type CONOKData struct {
 	SessionID     string
+	ControlLink   string
 	RequestLimit  int
 	KeepAliveTime int
-	ControlLink   string
 }
 
 type SERVNAMEData struct {
@@ -49,14 +49,14 @@ type LOOPData struct {
 }
 
 type ENDData struct {
-	Code    int
 	Message string
+	Code    int
 }
 
 type UData struct {
+	Values         []string
 	SubscriptionID int
 	Item           int
-	Values         []string
 }
 
 type SUBOKData struct {

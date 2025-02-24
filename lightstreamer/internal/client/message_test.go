@@ -19,7 +19,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "CONOK",
 			input: "CONOK,sessionID,50000,5000,*",
 			pass:  true,
-			want:  Message{"CONOK", CONOKData{"sessionID", 50000, 5000, "*"}},
+			want:  Message{CONOKData{"sessionID", "*", 50000, 5000}, "CONOK"},
 		},
 		{
 			name:  "CONOK (too short)",
@@ -40,7 +40,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "SERVNAME",
 			input: "SERVNAME,my server",
 			pass:  true,
-			want:  Message{"SERVNAME", SERVNAMEData{"my server"}},
+			want:  Message{SERVNAMEData{"my server"}, "SERVNAME"},
 		},
 		{
 			name:  "SERVNAME (too short)",
@@ -51,7 +51,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "CLIENTIP",
 			input: "CLIENTIP,192.168.0.1",
 			pass:  true,
-			want:  Message{"CLIENTIP", CLIENTIPData{"192.168.0.1"}},
+			want:  Message{CLIENTIPData{"192.168.0.1"}, "CLIENTIP"},
 		},
 		{
 			name:  "CLIENTIP (too short)",
@@ -62,19 +62,19 @@ func TestParseMessage(t *testing.T) {
 			name:  "NOOP",
 			input: "NOOP,ignored text",
 			pass:  true,
-			want:  Message{"NOOP", NOOPData{Preamble: []string{"ignored text"}}},
+			want:  Message{NOOPData{Preamble: []string{"ignored text"}}, "NOOP"},
 		},
 		{
 			name:  "CONS (unlimited)",
 			input: "CONS,unlimited",
 			pass:  true,
-			want:  Message{"CONS", CONSData{math.Inf(1)}},
+			want:  Message{CONSData{math.Inf(1)}, "CONS"},
 		},
 		{
 			name:  "CONS (limited)",
 			input: "CONS,5000",
 			pass:  true,
-			want:  Message{"CONS", CONSData{5000}},
+			want:  Message{CONSData{5000}, "CONS"},
 		},
 		{
 			name:  "CONS (too short)",
@@ -90,7 +90,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "SYNC",
 			input: "SYNC,5000",
 			pass:  true,
-			want:  Message{"SYNC", SYNCData{5000}},
+			want:  Message{SYNCData{5000}, "SYNC"},
 		},
 		{
 			name:  "SYNC (bad number)",
@@ -106,13 +106,13 @@ func TestParseMessage(t *testing.T) {
 			name:  "PROBE",
 			input: "PROBE",
 			pass:  true,
-			want:  Message{"PROBE", nil},
+			want:  Message{nil, "PROBE"},
 		},
 		{
 			name:  "LOOP",
 			input: "LOOP,0",
 			pass:  true,
-			want:  Message{"LOOP", LOOPData{ExpectedDelay: 0}},
+			want:  Message{LOOPData{ExpectedDelay: 0}, "LOOP"},
 		},
 		{
 			name:  "LOOP (too short)",
@@ -128,7 +128,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "END",
 			input: "END,10,done",
 			pass:  true,
-			want:  Message{"END", ENDData{10, "done"}},
+			want:  Message{ENDData{"done", 10}, "END"},
 		},
 		{
 			name:  "END (too short)",
@@ -144,13 +144,13 @@ func TestParseMessage(t *testing.T) {
 			name:  "U",
 			input: "U,100,1,1,2,3",
 			pass:  true,
-			want:  Message{"U", UData{100, 1, []string{"1", "2", "3"}}},
+			want:  Message{UData{[]string{"1", "2", "3"}, 100, 1}, "U"},
 		},
 		{
 			name:  "U (no data)",
 			input: "U,100,1",
 			pass:  true,
-			want:  Message{"U", UData{100, 1, []string{}}},
+			want:  Message{UData{[]string{}, 100, 1}, "U"},
 		},
 		{
 			name:  "U (too short)",
@@ -171,7 +171,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "SUBOK",
 			input: "SUBOK,100,1,5",
 			pass:  true,
-			want:  Message{"SUBOK", SUBOKData{100, 1, 5}},
+			want:  Message{SUBOKData{100, 1, 5}, "SUBOK"},
 		},
 		{
 			name:  "SUBOK (too short)",
@@ -197,19 +197,19 @@ func TestParseMessage(t *testing.T) {
 			name:  "CONF (filtered)",
 			input: "CONF,100,100,filtered",
 			pass:  true,
-			want:  Message{"CONF", CONFData{100, 100, true}},
+			want:  Message{CONFData{100, 100, true}, "CONF"},
 		},
 		{
 			name:  "CONF (unfiltered)",
 			input: "CONF,100,100,unfiltered",
 			pass:  true,
-			want:  Message{"CONF", CONFData{100, 100, false}},
+			want:  Message{CONFData{100, 100, false}, "CONF"},
 		},
 		{
 			name:  "CONF (unlimited)",
 			input: "CONF,100,unlimited,unfiltered",
 			pass:  true,
-			want:  Message{"CONF", CONFData{100, math.Inf(1), false}},
+			want:  Message{CONFData{100, math.Inf(1), false}, "CONF"},
 		},
 		{
 			name:  "CONF (too short)",
@@ -235,7 +235,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "PROG",
 			input: "PROG,100",
 			pass:  true,
-			want:  Message{"PROG", PROGData{100}},
+			want:  Message{PROGData{100}, "PROG"},
 		},
 		{
 			name:  "PROG (too short)",
@@ -251,7 +251,7 @@ func TestParseMessage(t *testing.T) {
 			name:  "unsupported",
 			input: "unsupported",
 			pass:  true,
-			want:  Message{"unsupported", UnsupportedData{[]string{}}},
+			want:  Message{UnsupportedData{[]string{}}, "unsupported"},
 		},
 	}
 
@@ -277,21 +277,21 @@ func TestMessages(t *testing.T) {
 		{
 			name:  "single",
 			input: "CONOK,sessionID,500,5000,*\r\n",
-			want:  []Message{{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}}},
+			want:  []Message{{CONOKData{"sessionID", "*", 500, 5000}, "CONOK"}},
 		},
 		{
 			name:  "multiple",
 			input: "CONOK,sessionID,500,5000,*\r\nPROBE\r\nEND,1,ok\r\n",
 			want: []Message{
-				{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}},
-				{"PROBE", nil},
-				{"END", ENDData{1, "ok"}},
+				{CONOKData{"sessionID", "*", 500, 5000}, "CONOK"},
+				{nil, "PROBE"},
+				{ENDData{"ok", 1}, "END"},
 			},
 		},
 		{
 			name:  "stop on invalid",
 			input: "CONOK,sessionID,500,5000,*\r\nSYNC,a\r\nEND,1,ok\r\n",
-			want:  []Message{{"CONOK", CONOKData{"sessionID", 500, 5000, "*"}}},
+			want:  []Message{{CONOKData{"sessionID", "*", 500, 5000}, "CONOK"}},
 		},
 	}
 
