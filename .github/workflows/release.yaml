@@ -16,7 +16,7 @@ jobs:
       - test
     uses: clambin/workflows/.github/workflows/build.yaml@main
     with:
-      image: clambin/iss-exporter
+      image: ghcr.io/clambin/iss-exporter
       dockerfile: Dockerfile
   release:
     needs:
