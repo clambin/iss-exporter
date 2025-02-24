@@ -79,28 +79,34 @@ type UnsupportedData struct {
 	Values []string
 }
 
-var messageParsers = map[string]func([]string) (any, error){
-	"CONOK":    parseCONOK,
-	"SERVNAME": parseSERVNAME,
-	"CLIENTIP": parseCLIENTIP,
-	"NOOP":     parseNOOP,
-	"CONS":     parseCONS,
-	"SYNC":     parseSYNC,
-	"PROBE":    parsePROBE,
-	"LOOP":     parseLOOP,
-	"END":      parseEND,
-	"U":        parseU,
-	"SUBOK":    parseSUBOK,
-	"CONF":     parseCONF,
-	"PROG":     parsePROG,
-}
+var (
+	sessionMessageParsers = map[string]func([]string) (any, error){
+		"CONOK":    parseCONOK,
+		"SERVNAME": parseSERVNAME,
+		"CLIENTIP": parseCLIENTIP,
+		"NOOP":     parseNOOP,
+		"CONS":     parseCONS,
+		"SYNC":     parseSYNC,
+		"PROBE":    parsePROBE,
+		"LOOP":     parseLOOP,
+		"END":      parseEND,
+		"U":        parseU,
+		"SUBOK":    parseSUBOK,
+		"CONF":     parseCONF,
+		"PROG":     parsePROG,
+	}
 
-func Messages(r io.ReadCloser) iter.Seq2[Message, error] {
+	controlMessageParsers = map[string]func([]string) (any, error){
+		"REQOK":  parseREQOK,
+		"REQERR": parseREQERR,
+	}
+)
+
+func SessionMessages(r io.Reader) iter.Seq2[Message, error] {
 	return func(yield func(Message, error) bool) {
-		defer func() { _ = r.Close() }()
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
-			msg, err := ParseMessage(scanner.Text())
+			msg, err := ParseSessionMessage(scanner.Text())
 			if !yield(msg, err) {
 				return
 			}
@@ -111,11 +117,19 @@ func Messages(r io.ReadCloser) iter.Seq2[Message, error] {
 	}
 }
 
-func ParseMessage(line string) (Message, error) {
+func ParseSessionMessage(line string) (Message, error) {
+	return parseMessage(line, sessionMessageParsers)
+}
+
+func ParseControlMessage(line string) (Message, error) {
+	return parseMessage(line, controlMessageParsers)
+}
+
+func parseMessage(line string, parsers map[string]func([]string) (any, error)) (Message, error) {
 	parts := strings.Split(line, ",")
 	var data any
 	var err error
-	if f, ok := messageParsers[parts[0]]; ok {
+	if f, ok := parsers[parts[0]]; ok {
 		data, err = f(parts[1:])
 	} else {
 		data = UnsupportedData{Values: parts[1:]}
@@ -288,4 +302,41 @@ func parseFloatWithUnlimited(value string) (float64, error) {
 		return math.Inf(1), nil
 	}
 	return strconv.ParseFloat(value, 64)
+}
+
+type REQOKData struct {
+	RequestID int
+}
+
+type REQERRData struct {
+	ErrorMessage string
+	RequestID    int
+	ErrorCode    int
+}
+
+func parseREQOK(parts []string) (any, error) {
+	if len(parts) != 1 {
+		return nil, fmt.Errorf("expected 1 argument, got %d", len(parts))
+	}
+	var data REQOKData
+	var err error
+	if data.RequestID, err = strconv.Atoi(parts[0]); err != nil {
+		return nil, fmt.Errorf("invalid request ID %q: %w", parts[0], err)
+	}
+	return data, nil
+}
+
+func parseREQERR(parts []string) (any, error) {
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("expected 3 argument, got %d", len(parts))
+	}
+	data := REQERRData{ErrorMessage: parts[2]}
+	var err error
+	if data.RequestID, err = strconv.Atoi(parts[0]); err != nil {
+		return nil, fmt.Errorf("invalid request ID %q: %w", parts[0], err)
+	}
+	if data.ErrorCode, err = strconv.Atoi(parts[1]); err != nil {
+		return nil, fmt.Errorf("invalid error code %q: %w", parts[1], err)
+	}
+	return data, nil
 }

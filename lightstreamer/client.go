@@ -28,13 +28,13 @@ const (
 
 type ClientSession struct {
 	createdTime    time.Time
-	connectTimeout time.Duration
 	logger         *slog.Logger
 	httpClient     *http.Client
 	loginArgs      url.Values
 	subscriptions  map[int]*subscription
 	sessionID      string
 	serverURL      string
+	connectTimeout time.Duration
 	requestLimit   int
 	keepAliveTime  int
 	requestID      int
@@ -71,9 +71,10 @@ func (s *ClientSession) Connected() bool {
 
 func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
 	r, err := s.connect(ctx, loginArgs)
-	if err == nil {
-		go s.handleSession(ctx, r)
+	if err != nil {
+		return err
 	}
+	go s.handleSession(ctx, r)
 	return s.waitOnConnection(ctx, s.connectTimeout)
 }
 
@@ -87,25 +88,45 @@ func (s *ClientSession) connect(ctx context.Context, loginArgs url.Values) (io.R
 }
 
 func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
-	for r != nil {
+	// create session & start readConnection
+	defer func() { _ = r.Close() }()
+	ch := make(chan client.Message)
+	go s.readConnection(ch, r)
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
-
-		rebind, err := s.handleConnection(r)
-		if err != nil {
-			s.logger.Error("error while handling connection", "err", err)
-			return
-		}
-		r = nil
-		if rebind {
-			s.logger.Debug("rebinding connection")
-			if r, err = s.rebind(ctx); err != nil {
-				s.logger.Error("error while rebinding connection", "err", err)
+		case msg := <-ch:
+			var err error
+			switch data := msg.Data.(type) {
+			case client.CONOKData:
+				err = s.handleConnectionOK(data)
+			case client.UData:
+				err = s.handleUpdate(data)
+			case client.SYNCData:
+				err = s.handleSync(data)
+			case client.LOOPData:
+				_ = r.Close()
+				if r, err = s.rebind(ctx); err == nil {
+					go s.readConnection(ch, r)
+				}
+			case client.ENDData:
+				s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
+			}
+			if err != nil {
+				s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
 			}
 		}
+	}
+}
+
+func (s *ClientSession) readConnection(ch chan<- client.Message, r io.Reader) {
+	for msg, err := range client.SessionMessages(r) {
+		if err != nil {
+			s.logger.Error("error reading message", "err", err)
+			continue
+		}
+		ch <- msg
 	}
 }
 
@@ -134,33 +155,6 @@ func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
 	}
 	s.createdTime = time.Now()
 	return resp.Body, nil
-}
-
-func (s *ClientSession) handleConnection(r io.ReadCloser) (bool, error) {
-	defer func() { _ = r.Close() }()
-	for msg, err := range client.Messages(r) {
-		if err != nil {
-			return false, fmt.Errorf("parse: %w", err)
-		}
-		//s.logger.Debug("< "+string(msg.MessageType), "data", msg.Data)
-		switch data := msg.Data.(type) {
-		case client.CONOKData:
-			err = s.handleConnectionOK(data)
-		case client.UData:
-			err = s.handleUpdate(data)
-		case client.SYNCData:
-			err = s.handleSync(data)
-		case client.LOOPData:
-			s.logger.Debug("session needs to be rebound", "delay", data.ExpectedDelay)
-			return true, nil
-		case client.ENDData:
-			s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
-		}
-		if err != nil {
-			s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
-		}
-	}
-	return false, nil
 }
 
 func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
@@ -225,24 +219,21 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	body = bytes.TrimSuffix(body, []byte("\r\n"))
-	parts := strings.Split(string(body), ",")
+	body = bytes.TrimSuffix(body, []byte("\n"))
+	body = bytes.TrimSuffix(body, []byte("\r"))
 
-	if len(parts) == 0 {
-		return errors.New("unexpected empty response")
+	msg, err := client.ParseControlMessage(string(body))
+	if err != nil {
+		return fmt.Errorf("unexpected response: %w", err)
 	}
-
-	switch parts[0] {
-	case "REQOK":
+	switch data := msg.Data.(type) {
+	case client.REQOKData:
 		s.subscriptions[s.subscriptionID] = &subscription{update: f}
 		return nil
-	case "REQERR":
-		if len(parts) != 4 {
-			return fmt.Errorf("expected 3 arguments, got %d", len(parts))
-		}
-		return fmt.Errorf("%s: %s", parts[2], parts[3])
+	case client.REQERRData:
+		return fmt.Errorf("%d: %s", data.ErrorCode, data.ErrorMessage)
 	default:
-		return fmt.Errorf("subscription failed: unexpected response %q", parts[0])
+		return fmt.Errorf("subscription failed: unexpected response %q", msg.MessageType)
 	}
 }
 

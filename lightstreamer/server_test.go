@@ -169,6 +169,9 @@ func TestServer_Subscribe(t *testing.T) {
 				WithAdapterSet("set"),
 				WithCID("cid"),
 			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			var rcvd atomic.Bool
 			err = clientSession.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {

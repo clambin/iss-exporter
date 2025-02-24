@@ -38,7 +38,7 @@ func NewCollector(ctx context.Context, logger *slog.Logger) (c *Collector, err e
 	c = &Collector{
 		Logger: logger,
 	}
-	c.connection, err = lightStreamerFeed(ctx, logger)
+	c.connection, err = lightStreamerClientSession(ctx, logger)
 	return c, err
 }
 
@@ -93,7 +93,7 @@ var groups = []string{
 
 var schema = []string{"Value"}
 
-func lightStreamerFeed(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
+func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
 	session, err := lightstreamer.NewClientSession(
 		ctx,
 		lightstreamer.WithLogger(logger),
