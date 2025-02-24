@@ -78,23 +78,13 @@ func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
 	return s.waitOnConnection(ctx, s.connectTimeout)
 }
 
-func (s *ClientSession) connect(ctx context.Context, loginArgs url.Values) (io.ReadCloser, error) {
-	resp, err := s.call(ctx, "create_session", loginArgs)
-	if err != nil {
-		return nil, err
-	}
-	s.createdTime = time.Now()
-	return resp.Body, nil
-}
-
 func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
-	// create session & start readConnection
-	defer func() { _ = r.Close() }()
 	ch := make(chan client.Message)
 	go s.readConnection(ch, r)
 	for {
 		select {
 		case <-ctx.Done():
+			_ = r.Close()
 			return
 		case msg := <-ch:
 			var err error
@@ -143,6 +133,15 @@ func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Dura
 			}
 		}
 	}
+}
+
+func (s *ClientSession) connect(ctx context.Context, parameters url.Values) (io.ReadCloser, error) {
+	resp, err := s.call(ctx, "create_session", parameters)
+	if err != nil {
+		return nil, err
+	}
+	s.createdTime = time.Now()
+	return resp.Body, nil
 }
 
 func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
