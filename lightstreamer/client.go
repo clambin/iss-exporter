@@ -20,12 +20,14 @@ import (
 
 const (
 	serverURL     = "https://push.lightstreamer.com/lightstreamer"
-	lsProto       = "TLCP-2.1.0"
+	defaultCID    = "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"
+	lsProtocol    = "TLCP-2.1.0"
 	timeDiffLimit = 5
 )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// A ClientSession manages a client session with a LightStreamer server.  Its main usage is to manage subscriptions to one or more feeds from the server's Data Adapter Set.
 type ClientSession struct {
 	createdTime    time.Time
 	logger         *slog.Logger
@@ -42,6 +44,10 @@ type ClientSession struct {
 	lock           sync.RWMutex
 }
 
+// NewClientSession returns a new client session with a LightStreamer server.
+// Use ClientSessionOption arguments to configure the session.
+//
+// Callers can rely on the session being bound (and ready for subscription requests) when NewClientSession returns.
 func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*ClientSession, error) {
 	clientSession := ClientSession{
 		logger:         slog.Default(),
@@ -49,13 +55,11 @@ func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*Client
 		serverURL:      serverURL,
 		httpClient:     http.DefaultClient,
 		connectTimeout: 5 * time.Second,
-		loginArgs:      url.Values{"LS_cid": []string{"mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"}},
+		loginArgs:      url.Values{"LS_cid": []string{defaultCID}},
 	}
-
 	for _, o := range opts {
 		o(&clientSession)
 	}
-
 	if err := clientSession.run(ctx, clientSession.loginArgs); err != nil {
 		return nil, err
 	}
@@ -63,7 +67,8 @@ func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*Client
 
 }
 
-func (s *ClientSession) Connected() bool {
+// Bound returns true if the client session is currently bound to the server, i.e. the client can subscribe to a feed.
+func (s *ClientSession) Bound() bool {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.sessionID != ""
@@ -128,7 +133,7 @@ func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Dura
 		case <-subCtx.Done():
 			return subCtx.Err()
 		case <-time.After(100 * time.Millisecond):
-			if s.Connected() {
+			if s.Bound() {
 				return nil
 			}
 		}
@@ -162,7 +167,7 @@ func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
 	s.sessionID = data.SessionID
 	s.requestLimit = data.RequestLimit
 	s.keepAliveTime = data.KeepAliveTime
-	s.logger.Debug("Connected", "sessionID", s.sessionID)
+	s.logger.Debug("Bound", "sessionID", s.sessionID)
 	return nil
 }
 
@@ -185,11 +190,19 @@ func (s *ClientSession) handleUpdate(data client.UData) error {
 	if !ok {
 		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
 	}
-	return sub.Update(data.Item, data.Values)
+	return sub.update(data.Item, data.Values)
 }
 
+// Subscribe registers a new subscription with the server for the specified adapter & group, asking for data adhering to the specified schema.
+// Any received updates are passed to the provided UpdateFunc.
+//
+// If maxFrequency is non-zero, Subscribe asks for data to be sent at the specified maximum frequency (in updates per second).
+//
+// Notes:
+//   - adapter, group & schema are application-specific and not validated by the ClientSession.
+//   - maxFrequency may be ignored by the server. ClientSession does not provide any throttling.
 func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64, f UpdateFunc) error {
-	if !s.Connected() {
+	if !s.Bound() {
 		return errors.New("client is not connected")
 	}
 
@@ -227,7 +240,7 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 	}
 	switch data := msg.Data.(type) {
 	case client.REQOKData:
-		s.subscriptions[s.subscriptionID] = &subscription{update: f}
+		s.subscriptions[s.subscriptionID] = &subscription{f: f}
 		return nil
 	case client.REQERRData:
 		return fmt.Errorf("%d: %s", data.ErrorCode, data.ErrorMessage)
@@ -236,7 +249,7 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 	}
 }
 
-var encodedArgs = url.Values{"LS_protocol": []string{lsProto}}.Encode()
+var encodedArgs = url.Values{"LS_protocol": []string{lsProtocol}}.Encode()
 
 func (s *ClientSession) call(ctx context.Context, endpoint string, values url.Values) (*http.Response, error) {
 	reqURL := s.serverURL + "/" + endpoint + ".txt?" + encodedArgs
@@ -269,32 +282,38 @@ func lsError(resp *http.Response) error {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// ClientSessionOption configures a ClientSession.
 type ClientSessionOption func(*ClientSession)
 
+// WithLogger configures a slog.Logger for the ClientSession.  The default is slog.Default().
 func WithLogger(logger *slog.Logger) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.logger = logger
 	}
 }
 
+// WithServerURL sets the Server URL. The default is https://push.lightstreamer.com/lightstreamer.
 func WithServerURL(url string) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.serverURL = url
 	}
 }
 
+// WithHTTPClient sets the http.Client to interact with the server. The default is http.DefaultClient.
 func WithHTTPClient(client *http.Client) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.httpClient = client
 	}
 }
 
+// WithAdapterSet sets the Adapter Set to use to create the session. There is no default.
 func WithAdapterSet(adapterSet string) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.loginArgs.Set("LS_adapter_set", adapterSet)
 	}
 }
 
+// WithCID sets the CID to use to create the session. The default is "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg".
 func WithCID(cid string) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.loginArgs.Set("LS_cid", cid)
@@ -316,7 +335,8 @@ func WithContentLength(length uint) ClientSessionOption {
 }
 */
 
-func WithConnectTimeout(timeout time.Duration) ClientSessionOption {
+// WithBindTimeout specifies how long NewClientSession waits for the session to be bound. If the timeout is exceeded, NewClientSession returns an error.
+func WithBindTimeout(timeout time.Duration) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.connectTimeout = timeout
 	}
@@ -325,20 +345,22 @@ func WithConnectTimeout(timeout time.Duration) ClientSessionOption {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 type subscription struct {
-	last   map[int]Values
-	update UpdateFunc
+	last map[int]Values
+	f    UpdateFunc
 }
 
+// UpdateFunc is called for every update received from the server, with update's item number and its Values.
+// The Values are fully decoded & processed, so the callback always receives a complete update.
 type UpdateFunc func(item int, values Values)
 
-func (s *subscription) Update(item int, values Values) error {
+func (s *subscription) update(item int, values Values) error {
 	if s.last == nil {
 		s.last = make(map[int]Values)
 	}
 	next, err := s.last[item].Update(values)
 	if err == nil {
 		s.last[item] = next
-		s.update(item, next)
+		s.f(item, next)
 	}
 	return err
 }

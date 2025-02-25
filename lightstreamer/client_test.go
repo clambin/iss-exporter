@@ -30,7 +30,7 @@ func TestClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	if !c.Connected() {
+	if !c.Bound() {
 		t.Error("failed to connect")
 	}
 }
@@ -53,7 +53,7 @@ func TestClient_Timeout(t *testing.T) {
 		WithLogger(l),
 		WithServerURL(ts.URL),
 		WithHTTPClient(ts.Client()),
-		WithConnectTimeout(time.Second),
+		WithBindTimeout(time.Second),
 	)
 	if err == nil {
 		t.Error("expected timeout error")

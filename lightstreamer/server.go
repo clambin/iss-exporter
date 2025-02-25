@@ -17,20 +17,8 @@ import (
 )
 
 const (
-	serverProtocol              = "TLCP-2.1.0"
 	keepAlivePeriodMilliSeconds = 5000
 )
-
-type Server struct {
-	http.Handler
-	AdapterSets map[string]AdapterSet
-	sessions    map[string]*session
-	logger      *slog.Logger
-	set         string
-	cid         string
-	sessionID   int
-	lock        sync.Mutex
-}
 
 type AdapterSet map[string]Adapter
 
@@ -45,9 +33,20 @@ type AdapterUpdate struct {
 	Item           int
 }
 
+type Server struct {
+	http.Handler
+	adapterSets map[string]AdapterSet
+	sessions    map[string]*session
+	logger      *slog.Logger
+	set         string
+	cid         string
+	sessionID   int
+	lock        sync.Mutex
+}
+
 func NewServer(set string, cid string, adapterSets map[string]AdapterSet, logger *slog.Logger) *Server {
 	s := Server{
-		AdapterSets: adapterSets,
+		adapterSets: adapterSets,
 		set:         set,
 		cid:         cid,
 		sessions:    make(map[string]*session),
@@ -56,7 +55,7 @@ func NewServer(set string, cid string, adapterSets map[string]AdapterSet, logger
 	m := http.NewServeMux()
 	m.HandleFunc("POST /create_session.txt", s.session)
 	m.HandleFunc("POST /control.txt", s.control)
-	s.Handler = withProtocol(serverProtocol)(m)
+	s.Handler = withProtocol(lsProtocol)(m)
 	return &s
 }
 
@@ -149,7 +148,7 @@ func (s *Server) subscribe(cmd controlCommand) error {
 	if !ok {
 		return errors.New("session not found")
 	}
-	adapterSet, ok := s.AdapterSets[cmd.DataAdapter]
+	adapterSet, ok := s.adapterSets[cmd.DataAdapter]
 	if !ok {
 		return errors.New("data adapter not found")
 	}
