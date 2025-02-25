@@ -167,7 +167,7 @@ func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
 	s.sessionID = data.SessionID
 	s.requestLimit = data.RequestLimit
 	s.keepAliveTime = data.KeepAliveTime
-	s.logger.Debug("Bound", "sessionID", s.sessionID)
+	s.logger.Debug("session is bound", "sessionID", s.sessionID)
 	return nil
 }
 

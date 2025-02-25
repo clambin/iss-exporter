@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	addr  = flag.String("addr", ":9090", "prometheus metrics address")
-	debug = flag.Bool("debug", false, "log debug messages")
+	version = "change-me"
+	addr    = flag.String("addr", ":9090", "prometheus metrics address")
+	debug   = flag.Bool("debug", false, "log debug messages")
 )
 
 func main() {
@@ -29,8 +30,10 @@ func main() {
 	if *debug {
 		opts.Level = slog.LevelDebug
 	}
+	l := slog.New(slog.NewTextHandler(os.Stderr, &opts))
+	l.Info("Starting iss-exporter", "version", version)
 
-	c, err := collector.NewCollector(ctx, slog.New(slog.NewTextHandler(os.Stderr, &opts)))
+	c, err := collector.NewCollector(ctx, l)
 	if err != nil {
 		panic(err)
 	}
