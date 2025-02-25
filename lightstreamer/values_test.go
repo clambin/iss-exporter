@@ -27,7 +27,7 @@ func TestValues_Update(t *testing.T) {
 			want:    Values{"1", "3", "3", "2"},
 		},
 		{
-			name:    "$ means a nil value",
+			name:    "$ means a blank value",
 			current: Values{"1", "2", "3", "4"},
 			update:  Values{"1", "3", "$", "4"},
 			pass:    true,

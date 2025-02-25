@@ -229,8 +229,8 @@ func parseEND(parts []string) (any, error) {
 }
 
 func parseU(parts []string) (any, error) {
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("expected 2 arguments, got %d", len(parts))
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("expected 3 arguments, got %d", len(parts))
 	}
 	var data UData
 	var err error
@@ -240,7 +240,7 @@ func parseU(parts []string) (any, error) {
 	if data.Item, err = strconv.Atoi(parts[1]); err != nil {
 		return nil, fmt.Errorf("invalid item %q: %w", parts[1], err)
 	}
-	data.Values = parts[2:]
+	data.Values = strings.Split(parts[2], "|")
 	return data, nil
 }
 

@@ -142,7 +142,7 @@ func TestParseSessionMessage(t *testing.T) {
 		},
 		{
 			name: "U",
-			line: "U,100,1,1,2,3",
+			line: "U,100,1,1|2|3",
 			pass: true,
 			want: Message{UData{[]string{"1", "2", "3"}, 100, 1}, "U"},
 		},
