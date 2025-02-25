@@ -199,7 +199,7 @@ func (s *ClientSession) handleUpdate(data client.UData) error {
 // If maxFrequency is non-zero, Subscribe asks for data to be sent at the specified maximum frequency (in updates per second).
 //
 // Notes:
-//   - adapter, group & schema are application-specific and not validated by the ClientSession.
+//   - adapter, group & schema are application-specific and not validated by ClientSession.
 //   - maxFrequency may be ignored by the server. ClientSession does not provide any throttling.
 func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64, f UpdateFunc) error {
 	if !s.Bound() {
@@ -353,7 +353,7 @@ type subscription struct {
 // The Values are fully decoded & processed, so the callback always receives a complete update.
 type UpdateFunc func(item int, values Values)
 
-func (s *subscription) update(item int, values Values) error {
+func (s *subscription) update(item int, values []string) error {
 	if s.last == nil {
 		s.last = make(map[int]Values)
 	}

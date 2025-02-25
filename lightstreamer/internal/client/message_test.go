@@ -149,8 +149,7 @@ func TestParseSessionMessage(t *testing.T) {
 		{
 			name: "U (no data)",
 			line: "U,100,1",
-			pass: true,
-			want: Message{UData{[]string{}, 100, 1}, "U"},
+			pass: false,
 		},
 		{
 			name: "U (too short)",

@@ -247,7 +247,8 @@ func (t *timedAdapter) Run(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			value++
-			t.publish(Values{strconv.Itoa(value)})
+			valueString := Value(strconv.Itoa(value))
+			t.publish(Values{&valueString})
 		}
 	}
 }
