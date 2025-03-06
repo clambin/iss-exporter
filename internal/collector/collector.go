@@ -55,7 +55,7 @@ func (c Collector) Collect(ch chan<- prometheus.Metric) {
 		c.Logger.Error("failed to get location", "err", err)
 		return
 	}
-	c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
+	//c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
 	ch <- prometheus.MustNewConstMetric(locationMetric, prometheus.GaugeValue, 1.0, longitude, latitude)
 }
 
