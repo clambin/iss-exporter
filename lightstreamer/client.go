@@ -92,6 +92,7 @@ func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 			_ = r.Close()
 			return
 		case msg := <-ch:
+			// s.logger.Debug("message received", "msg", msg)
 			var err error
 			switch data := msg.Data.(type) {
 			case client.CONOKData:

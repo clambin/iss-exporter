@@ -89,6 +89,8 @@ var groups = []string{
 	"USLAB000058",   // cabin pressure
 	"USLAB000059",   // cabin temperature
 	"AIRLOCK000049", // crewlock pressure
+	"AIRLOCK000054", // Airlock Pressure
+	"USLAB000053",   // Lab ppO2
 }
 
 var schema = []string{"Value"}
@@ -119,6 +121,7 @@ func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*ligh
 		}); err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
+		logger.Info("subscribed successfully", "group", group)
 	}
 	return session, nil
 }
