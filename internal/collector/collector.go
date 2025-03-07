@@ -55,7 +55,7 @@ func (c Collector) Collect(ch chan<- prometheus.Metric) {
 		c.Logger.Error("failed to get location", "err", err)
 		return
 	}
-	c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
+	//c.Logger.Debug("location found", "longitude", longitude, "latitude", latitude)
 	ch <- prometheus.MustNewConstMetric(locationMetric, prometheus.GaugeValue, 1.0, longitude, latitude)
 }
 
@@ -89,6 +89,8 @@ var groups = []string{
 	"USLAB000058",   // cabin pressure
 	"USLAB000059",   // cabin temperature
 	"AIRLOCK000049", // crewlock pressure
+	"AIRLOCK000054", // Airlock Pressure
+	"USLAB000053",   // Lab ppO2
 }
 
 var schema = []string{"Value"}
@@ -104,10 +106,14 @@ func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*ligh
 	}
 
 	for _, group := range groups {
-		if err = session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(item int, values lightstreamer.Values) {
-			value, err := strconv.ParseFloat(values[0], 64)
+		if err = session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(_ int, values lightstreamer.Values) {
+			if values[0] == nil {
+				logger.Warn("empty value in subscription. ignoring")
+				return
+			}
+			value, err := strconv.ParseFloat(string(*values[0]), 64)
 			if err != nil {
-				logger.Error("failed to parse value", "group", group, "value", values[0], "err", err)
+				logger.Error("failed to parse value", "group", group, "value", *values[0], "err", err)
 				return
 			}
 			telemetryMetric.WithLabelValues(group).Set(value)
@@ -115,6 +121,7 @@ func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*ligh
 		}); err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
+		logger.Info("subscribed successfully", "group", group)
 	}
 	return session, nil
 }

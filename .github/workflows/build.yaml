@@ -3,7 +3,7 @@ on:
   push:
     branches:
       - main
-      - rebind
+      - values
 permissions:
   contents: read
   packages: write

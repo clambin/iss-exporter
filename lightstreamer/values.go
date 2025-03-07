@@ -3,40 +3,46 @@ package lightstreamer
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 )
 
-// Values represents a set of values received from the server for a subscription.
-//
-// Notes:
-//   - Values is implemented as a slice of strings, meaning null and empty fields are indistinguishable. The "#" indicator is therefore equivalent to "$".
-//   - Percent-encoding values are currently not supported.
-type Values []string
+type Value string
+type Values []*Value
 
-// String returns a comma-separated string representation of Values.
 func (v Values) String() string {
-	return strings.Join(v, ",")
+	s := make([]string, len(v))
+	for i := range v {
+		if v[i] != nil {
+			s[i] = string(*v[i])
+		} else {
+			s[i] = "<nil>"
+		}
+	}
+	return strings.Join(s, ",")
 }
 
-// Update updates the current Values with newly received Values.
-func (v Values) Update(update Values) (Values, error) {
+func (v Values) Update(values []string) (Values, error) {
 	if len(v) == 0 {
-		return update, nil
+		v = make(Values, len(values))
 	}
 
-	// don't really need to make a copy, since update() operates on a copy of v
+	// don't really need to make a copy, since Update() operates on a copy of v
 	next := make(Values, len(v))
 	copy(next, v)
+
 	var idx int
-	for _, value := range update {
+	for _, value := range values {
 		if idx > len(v)-1 {
 			return Values{}, errors.New("invalid value")
 		}
 		switch {
 		case value == "":
-		case value == "#" || value == "$":
-			next[idx] = ""
+		case value == "#":
+			next[idx] = nil
+		case value == "$":
+			next[idx] = valuePtr("")
 		case value[0] == '^':
 			step, err := strconv.Atoi(value[1:])
 			if err != nil {
@@ -44,8 +50,10 @@ func (v Values) Update(update Values) (Values, error) {
 			}
 			idx += step - 1
 		default:
-			// TODO: percent-decode string. url.XXXUnescape?
-			next[idx] = value
+			if v2, err := url.PathUnescape(value); err == nil {
+				value = v2
+			}
+			next[idx] = valuePtr(value)
 		}
 		idx++
 	}
@@ -54,4 +62,9 @@ func (v Values) Update(update Values) (Values, error) {
 	}
 
 	return next, nil
+}
+
+func valuePtr(v string) *Value {
+	vv := Value(v)
+	return &vv
 }
