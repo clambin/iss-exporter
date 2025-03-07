@@ -4,15 +4,24 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"iter"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
 )
 
+var _ slog.LogValuer = &Message{}
+
 type Message struct {
 	Data        any
 	MessageType MessageType
+}
+
+func (m Message) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("type", string(m.MessageType)),
+		slog.Any("data", m.Data),
+	)
 }
 
 type MessageType string
@@ -102,19 +111,22 @@ var (
 	}
 )
 
-func SessionMessages(r io.Reader) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
+func SessionMessages(r io.Reader, logger *slog.Logger) <-chan Message {
+	ch := make(chan Message)
+	go func() {
+		defer close(ch)
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			msg, err := ParseSessionMessage(scanner.Text())
-			if !yield(msg, err) {
-				return
-			}
+			//logger.Debug("message received", "err", err, "msg", msg)
 			if err != nil {
+				logger.Error("error reading message", "err", err)
 				return
 			}
+			ch <- msg
 		}
-	}
+	}()
+	return ch
 }
 
 func ParseSessionMessage(line string) (Message, error) {

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,6 +43,8 @@ type ClientSession struct {
 	requestID      int
 	subscriptionID int
 	lock           sync.RWMutex
+
+	counter atomic.Int32
 }
 
 // NewClientSession returns a new client session with a LightStreamer server.
@@ -60,10 +63,11 @@ func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*Client
 	for _, o := range opts {
 		o(&clientSession)
 	}
-	if err := clientSession.run(ctx, clientSession.loginArgs); err != nil {
-		return nil, err
+	err := clientSession.createSession(ctx, clientSession.loginArgs)
+	if err == nil {
+		err = clientSession.waitOnConnection(ctx, clientSession.connectTimeout)
 	}
-	return &clientSession, nil
+	return &clientSession, err
 
 }
 
@@ -74,25 +78,30 @@ func (s *ClientSession) Bound() bool {
 	return s.sessionID != ""
 }
 
-func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
+func (s *ClientSession) createSession(ctx context.Context, loginArgs url.Values) error {
 	r, err := s.connect(ctx, loginArgs)
-	if err != nil {
-		return err
+	if err == nil {
+		go s.handleSession(ctx, r)
 	}
-	go s.handleSession(ctx, r)
-	return s.waitOnConnection(ctx, s.connectTimeout)
+	return err
 }
 
 func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
-	ch := make(chan client.Message)
-	go s.readConnection(ch, r)
+	defer func() {
+		s.logger.Info("connection closed", "count", s.counter.Add(-1))
+		_ = r.Close()
+	}()
+	s.logger.Debug("connection opened", "count", s.counter.Add(1))
+	ch := client.SessionMessages(r, s.logger)
 	for {
 		select {
 		case <-ctx.Done():
-			_ = r.Close()
 			return
-		case msg := <-ch:
-			// s.logger.Debug("message received", "msg", msg)
+		case msg, ok := <-ch:
+			if !ok {
+				s.logger.Warn("session closed")
+				return
+			}
 			var err error
 			switch data := msg.Data.(type) {
 			case client.CONOKData:
@@ -102,10 +111,7 @@ func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 			case client.SYNCData:
 				err = s.handleSync(data)
 			case client.LOOPData:
-				_ = r.Close()
-				if r, err = s.rebind(ctx); err == nil {
-					go s.readConnection(ch, r)
-				}
+				err = s.handleLoop(ctx, data)
 			case client.ENDData:
 				s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
 			}
@@ -113,16 +119,6 @@ func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 				s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
 			}
 		}
-	}
-}
-
-func (s *ClientSession) readConnection(ch chan<- client.Message, r io.Reader) {
-	for msg, err := range client.SessionMessages(r) {
-		if err != nil {
-			s.logger.Error("error reading message", "err", err)
-			continue
-		}
-		ch <- msg
 	}
 }
 
@@ -172,6 +168,7 @@ func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
 	return nil
 }
 
+// TODO: this could be used to determine time difference between client & server and then include the server time in Message
 func (s *ClientSession) handleSync(data client.SYNCData) error {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -182,6 +179,22 @@ func (s *ClientSession) handleSync(data client.SYNCData) error {
 		s.logger.Warn("client/server time difference", "diff", diff)
 	}
 	return nil
+}
+
+func (s *ClientSession) handleLoop(ctx context.Context, data client.LOOPData) error {
+	if data.ExpectedDelay > 0 {
+		s.logger.Debug("client loop detected", "expectedDelay", data.ExpectedDelay)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Duration(data.ExpectedDelay) * time.Second):
+		}
+	}
+	r, err := s.rebind(ctx)
+	if err == nil {
+		go s.handleSession(ctx, r)
+	}
+	return err
 }
 
 func (s *ClientSession) handleUpdate(data client.UData) error {
@@ -322,19 +335,18 @@ func WithCID(cid string) ClientSessionOption {
 }
 
 /*
-func WithCredentials(username, password string) ClientSessionOption {
-	return func(c *ClientSession) {
-		c.loginArgs.Set("LS_user", username)
-		c.loginArgs.Set("LS_password", password)
+	func WithCredentials(username, password string) ClientSessionOption {
+		return func(c *ClientSession) {
+			c.loginArgs.Set("LS_user", username)
+			c.loginArgs.Set("LS_password", password)
+		}
 	}
-}
-
+*/
 func WithContentLength(length uint) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
 	}
 }
-*/
 
 // WithBindTimeout specifies how long NewClientSession waits for the session to be bound. If the timeout is exceeded, NewClientSession returns an error.
 func WithBindTimeout(timeout time.Duration) ClientSessionOption {
