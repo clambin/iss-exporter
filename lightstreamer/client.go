@@ -30,21 +30,17 @@ const (
 
 // A ClientSession manages a client session with a LightStreamer server.  Its main usage is to manage subscriptions to one or more feeds from the server's Data Adapter Set.
 type ClientSession struct {
-	createdTime    time.Time
-	logger         *slog.Logger
-	httpClient     *http.Client
-	loginArgs      url.Values
-	subscriptions  map[int]*subscription
-	sessionID      string
-	serverURL      string
-	connectTimeout time.Duration
-	requestLimit   int
-	keepAliveTime  int
-	requestID      int
-	subscriptionID int
-	lock           sync.RWMutex
-
-	counter atomic.Int32
+	createdTime     atomic.Value
+	sessionID       atomic.Value
+	logger          *slog.Logger
+	httpClient      *http.Client
+	loginArgs       url.Values
+	serverURL       string
+	subscriptions   subscriptions
+	connectTimeout  time.Duration
+	openConnections atomic.Int32
+	requestID       atomic.Int32
+	subscriptionID  atomic.Int32
 }
 
 // NewClientSession returns a new client session with a LightStreamer server.
@@ -53,8 +49,8 @@ type ClientSession struct {
 // Callers can rely on the session being bound (and ready for subscription requests) when NewClientSession returns.
 func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*ClientSession, error) {
 	clientSession := ClientSession{
-		logger:         slog.Default(),
-		subscriptions:  make(map[int]*subscription),
+		logger: slog.New(slog.DiscardHandler),
+		//subscriptions:  make(map[int]*subscription),
 		serverURL:      serverURL,
 		httpClient:     http.DefaultClient,
 		connectTimeout: 5 * time.Second,
@@ -73,9 +69,7 @@ func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*Client
 
 // Bound returns true if the client session is currently bound to the server, i.e. the client can subscribe to a feed.
 func (s *ClientSession) Bound() bool {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	return s.sessionID != ""
+	return s.sessionID.Load() != nil
 }
 
 func (s *ClientSession) createSession(ctx context.Context, loginArgs url.Values) error {
@@ -88,18 +82,19 @@ func (s *ClientSession) createSession(ctx context.Context, loginArgs url.Values)
 
 func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 	defer func() {
-		s.logger.Info("connection closed", "count", s.counter.Add(-1))
+		s.logger.Debug("connection closed", "count", s.openConnections.Add(-1))
 		_ = r.Close()
 	}()
-	s.logger.Debug("connection opened", "count", s.counter.Add(1))
+	s.logger.Debug("connection opened", "count", s.openConnections.Add(1))
 	ch := client.SessionMessages(r, s.logger)
 	for {
 		select {
 		case <-ctx.Done():
+			s.logger.Debug("context done", "err", ctx.Err())
 			return
 		case msg, ok := <-ch:
 			if !ok {
-				s.logger.Warn("session closed")
+				s.logger.Debug("connection closed")
 				return
 			}
 			var err error
@@ -113,7 +108,7 @@ func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
 			case client.LOOPData:
 				err = s.handleLoop(ctx, data)
 			case client.ENDData:
-				s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
+				s.logger.Info("end", "code", data.Code, "msg", data.Message)
 			}
 			if err != nil {
 				s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
@@ -142,38 +137,42 @@ func (s *ClientSession) connect(ctx context.Context, parameters url.Values) (io.
 	if err != nil {
 		return nil, err
 	}
-	s.createdTime = time.Now()
+	s.createdTime.Store(time.Now())
 	return resp.Body, nil
 }
 
 func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
+	sessionID := s.sessionID.Load()
+	if sessionID == nil {
+		return nil, errors.New("can't rebind unbound session")
+	}
 	parameters := make(url.Values)
-	parameters.Set("LS_session", s.sessionID)
+	parameters.Set("LS_session", sessionID.(string))
 
 	resp, err := s.call(ctx, "bind_session", parameters)
 	if err != nil {
 		return nil, err
 	}
-	s.createdTime = time.Now()
+	s.createdTime.Store(time.Now())
 	return resp.Body, nil
 }
 
 func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	s.sessionID = data.SessionID
-	s.requestLimit = data.RequestLimit
-	s.keepAliveTime = data.KeepAliveTime
+	s.sessionID.Store(data.SessionID)
 	s.logger.Debug("session is bound", "sessionID", s.sessionID)
 	return nil
 }
 
 // TODO: this could be used to determine time difference between client & server and then include the server time in Message
 func (s *ClientSession) handleSync(data client.SYNCData) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
 	serverAge := data.SecondsSinceInitialHeader
-	clientAge := int(time.Since(s.createdTime).Seconds())
+	created := s.createdTime.Load()
+	if created == nil {
+		// this should never happen
+		return fmt.Errorf("received sync on unbound session")
+
+	}
+	clientAge := int(time.Since(created.(time.Time)).Seconds())
 	s.logger.Debug("time sync check", "serverAge", serverAge, "clientAge", clientAge)
 	if diff := clientAge - serverAge; math.Abs(float64(diff)) > timeDiffLimit {
 		s.logger.Warn("client/server time difference", "diff", diff)
@@ -182,8 +181,8 @@ func (s *ClientSession) handleSync(data client.SYNCData) error {
 }
 
 func (s *ClientSession) handleLoop(ctx context.Context, data client.LOOPData) error {
+	s.logger.Debug("loop", "expectedDelay", data.ExpectedDelay)
 	if data.ExpectedDelay > 0 {
-		s.logger.Debug("client loop detected", "expectedDelay", data.ExpectedDelay)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -198,13 +197,10 @@ func (s *ClientSession) handleLoop(ctx context.Context, data client.LOOPData) er
 }
 
 func (s *ClientSession) handleUpdate(data client.UData) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	sub, ok := s.subscriptions[data.SubscriptionID]
-	if !ok {
-		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
+	if sub, ok := s.subscriptions.get(data.SubscriptionID); ok {
+		return sub.update(data.Item, data.Values)
 	}
-	return sub.update(data.Item, data.Values)
+	return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
 }
 
 // Subscribe registers a new subscription with the server for the specified adapter & group, asking for data adhering to the specified schema.
@@ -220,16 +216,12 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 		return errors.New("client is not connected")
 	}
 
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.requestID++
-	s.subscriptionID++
+	subID := int(s.subscriptionID.Add(1))
 	parameters := make(url.Values)
 	parameters.Set("LS_op", "add")
-	parameters.Set("LS_reqId", strconv.Itoa(s.requestID))
-	parameters.Set("LS_session", s.sessionID)
-	parameters.Set("LS_subId", strconv.Itoa(s.subscriptionID))
+	parameters.Set("LS_reqId", strconv.Itoa(int(s.requestID.Add(1))))
+	parameters.Set("LS_session", s.sessionID.Load().(string))
+	parameters.Set("LS_subId", strconv.Itoa(subID))
 	parameters.Set("LS_data_adapter", adapter)
 	parameters.Set("LS_group", group)
 	parameters.Set("LS_schema", strings.Join(schema, " "))
@@ -254,7 +246,7 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 	}
 	switch data := msg.Data.(type) {
 	case client.REQOKData:
-		s.subscriptions[s.subscriptionID] = &subscription{f: f}
+		s.subscriptions.add(subID, &subscription{onUpdate: f})
 		return nil
 	case client.REQERRData:
 		return fmt.Errorf("%d: %s", data.ErrorCode, data.ErrorMessage)
@@ -341,12 +333,13 @@ func WithCID(cid string) ClientSessionOption {
 			c.loginArgs.Set("LS_password", password)
 		}
 	}
-*/
+
 func WithContentLength(length uint) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
 	}
 }
+*/
 
 // WithBindTimeout specifies how long NewClientSession waits for the session to be bound. If the timeout is exceeded, NewClientSession returns an error.
 func WithBindTimeout(timeout time.Duration) ClientSessionOption {
@@ -358,8 +351,8 @@ func WithBindTimeout(timeout time.Duration) ClientSessionOption {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 type subscription struct {
-	last map[int]Values
-	f    UpdateFunc
+	last     map[int]Values
+	onUpdate UpdateFunc
 }
 
 // UpdateFunc is called for every update received from the server, with update's item number and its Values.
@@ -373,7 +366,28 @@ func (s *subscription) update(item int, values []string) error {
 	next, err := s.last[item].Update(values)
 	if err == nil {
 		s.last[item] = next
-		s.f(item, next)
+		s.onUpdate(item, next)
 	}
 	return err
+}
+
+type subscriptions struct {
+	items map[int]*subscription
+	lock  sync.RWMutex
+}
+
+func (s *subscriptions) add(item int, sub *subscription) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.items == nil {
+		s.items = make(map[int]*subscription)
+	}
+	s.items[item] = sub
+}
+
+func (s *subscriptions) get(item int) (*subscription, bool) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	sub, ok := s.items[item]
+	return sub, ok
 }
