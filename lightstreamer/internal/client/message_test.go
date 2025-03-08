@@ -2,6 +2,7 @@ package client
 
 import (
 	"io"
+	"log/slog"
 	"math"
 	"reflect"
 	"strings"
@@ -356,10 +357,8 @@ func TestSessionMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got []Message
-			for msg, err := range SessionMessages(io.NopCloser(strings.NewReader(tt.input))) {
-				if err == nil {
-					got = append(got, msg)
-				}
+			for msg := range SessionMessages(io.NopCloser(strings.NewReader(tt.input)), slog.New(slog.DiscardHandler)) {
+				got = append(got, msg)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %v want %v", got, tt.want)

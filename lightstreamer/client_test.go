@@ -70,7 +70,9 @@ func TestClient_Rebind(t *testing.T) {
 		case "/create_session.txt":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("CONOK,mySessionID,50000,5000,*\r\n"))
+			_, _ = w.Write([]byte("SYNC,0\r\n"))
 			_, _ = w.Write([]byte("LOOP,0\r\n"))
+			_, _ = w.Write([]byte("END,0,no error\r\n"))
 			w.(http.Flusher).Flush()
 		case "/bind_session.txt":
 			if !bytes.Equal(body, []byte("LS_session=mySessionID")) {
