@@ -142,12 +142,12 @@ func (s *ClientSession) connect(ctx context.Context, parameters url.Values) (io.
 }
 
 func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
-	sessionID := s.sessionID.Load()
-	if sessionID == nil {
+	sessionID, ok := s.sessionID.Load().(string)
+	if !ok {
 		return nil, errors.New("can't rebind unbound session")
 	}
 	parameters := make(url.Values)
-	parameters.Set("LS_session", sessionID.(string))
+	parameters.Set("LS_session", sessionID)
 
 	resp, err := s.call(ctx, "bind_session", parameters)
 	if err != nil {
@@ -159,7 +159,7 @@ func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
 
 func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
 	s.sessionID.Store(data.SessionID)
-	s.logger.Debug("session is bound", "sessionID", s.sessionID)
+	s.logger.Debug("session is bound", "sessionID", data.SessionID)
 	return nil
 }
 
@@ -327,12 +327,12 @@ func WithCID(cid string) ClientSessionOption {
 }
 
 /*
-	func WithCredentials(username, password string) ClientSessionOption {
-		return func(c *ClientSession) {
-			c.loginArgs.Set("LS_user", username)
-			c.loginArgs.Set("LS_password", password)
-		}
+func WithCredentials(username, password string) ClientSessionOption {
+	return func(c *ClientSession) {
+		c.loginArgs.Set("LS_user", username)
+		c.loginArgs.Set("LS_password", password)
 	}
+}
 
 func WithContentLength(length uint) ClientSessionOption {
 	return func(c *ClientSession) {
