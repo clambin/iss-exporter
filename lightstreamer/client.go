@@ -91,7 +91,7 @@ func (c *ClientSession) SessionEstablished(ctx context.Context) error {
 	}
 }
 
-// ConnectWithSession is a convenience function that opens a connection and waits for a session to be established
+// ConnectWithSession is a convenience function that opens a connection and waits for a session to be established.
 func (c *ClientSession) ConnectWithSession(ctx context.Context, timeout time.Duration) error {
 	if err := c.Connect(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)

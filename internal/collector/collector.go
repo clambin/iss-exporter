@@ -101,14 +101,8 @@ func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*ligh
 		lightstreamer.WithLogger(logger),
 		lightstreamer.WithAdapterSet("ISSLIVE"),
 	)
-	if err := session.Connect(ctx); err != nil {
-		return nil, fmt.Errorf("lightstreamer connect: %w", err)
-	}
-
-	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := session.SessionEstablished(ctx2); err != nil {
-		return nil, fmt.Errorf("lightstreamer session: %w", err)
+	if err := session.ConnectWithSession(ctx, 10*time.Second); err != nil {
+		return nil, err
 	}
 
 	for _, group := range groups {
