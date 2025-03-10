@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestMessage_LogValue(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  Message
+		want string
+	}{
+		{"LOOP", Message{LOOPData{10}, "LOOP"}, "[type=LOOP data={10}]"},
+		{"PROBE", Message{PROBEData{}, "PROBE"}, "[type=PROBE]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.msg.LogValue().String(); got != tt.want {
+				t.Errorf("Message.LogValue() = %v, want %v", got, tt.want)
+			}
+		})
+
+	}
+}
+
 func TestParseSessionMessage(t *testing.T) {
 	tests := []struct {
 		name string
@@ -29,7 +49,7 @@ func TestParseSessionMessage(t *testing.T) {
 		{name: "SYNC", line: "SYNC,5000", pass: true, want: Message{SYNCData{5000}, "SYNC"}},
 		{name: "SYNC (bad number)", line: "SYNC,a", pass: false},
 		{name: "SYNC (too short)", line: "SYNC", pass: false},
-		{name: "PROBE", line: "PROBE", pass: true, want: Message{nil, "PROBE"}},
+		{name: "PROBE", line: "PROBE", pass: true, want: Message{PROBEData{}, "PROBE"}},
 		{name: "LOOP", line: "LOOP,0", pass: true, want: Message{LOOPData{ExpectedDelay: 0}, "LOOP"}},
 		{name: "LOOP (too short)", line: "LOOP", pass: false},
 		{name: "LOOP (bad number)", line: "LOOP,a", pass: false},
@@ -37,10 +57,10 @@ func TestParseSessionMessage(t *testing.T) {
 		{name: "END (too short)", line: "END", pass: false},
 		{name: "END (bad number)", line: "END,a,error", pass: false},
 		{name: "U", line: "U,100,1,1|2|3", pass: true, want: Message{UData{[]string{"1", "2", "3"}, 100, 1}, "U"}},
-		{name: "U (no data)", line: "U,100,1", pass: false},
 		{name: "U (too short)", line: "U", pass: false},
-		{name: "U (invalid subscription ID)", line: "U,a,1", pass: false},
-		{name: "U (invalid item number)", line: "U,100,a", pass: false},
+		{name: "U (no data)", line: "U,100,1", pass: false},
+		{name: "U (invalid subscription ID)", line: "U,a,1,1|2|3", pass: false},
+		{name: "U (invalid item number)", line: "U,100,a,1|2|3", pass: false},
 		{name: "SUBOK", line: "SUBOK,100,1,5", pass: true, want: Message{SUBOKData{100, 1, 5}, "SUBOK"}},
 		{name: "SUBOK (too short)", line: "SUBOK", pass: false},
 		{name: "SUBOK (invalid subscription ID)", line: "SUBOK,a,1,5", pass: false},

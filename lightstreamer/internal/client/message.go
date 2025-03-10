@@ -84,6 +84,8 @@ type PROGData struct {
 	Progressive int
 }
 
+type PROBEData struct{}
+
 type UnsupportedData struct {
 	Values []string
 }
@@ -195,7 +197,7 @@ func parseSYNC(parts []string) (any, error) {
 }
 
 func parsePROBE(_ []string) (any, error) {
-	return nil, nil
+	return PROBEData{}, nil
 }
 
 func parseLOOP(parts []string) (any, error) {

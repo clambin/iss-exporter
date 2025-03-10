@@ -136,19 +136,22 @@ func readAllMessages(r io.Reader, ch chan client.Message, done chan struct{}) {
 }
 
 func (c *ClientSession) handleMessage(ctx context.Context, msg client.Message) {
-	// c.logger.Debug("received message", "msg", msg)
 	switch data := msg.Data.(type) {
 	case client.CONOKData:
-
 		c.sessionID.Store(data.SessionID)
 		c.logger.Debug("session established", "sessionID", data.SessionID)
-	//case client.ENDData:
+	case client.PROGData, client.NOOPData, client.SERVNAMEData, client.CLIENTIPData, client.CONSData,
+		client.CONFData, client.SUBOKData, client.PROBEData:
+	case client.UData:
+		c.handleUpdate(data)
 	case client.SYNCData:
 		c.handleSync(data)
 	case client.LOOPData:
 		go c.handleLoop(ctx, data)
-	case client.UData:
-		c.handleUpdate(data)
+	case client.ENDData:
+		c.logger.Debug("connection closing", "data", data)
+	default:
+		c.logger.Debug("received message", "msg", msg)
 	}
 }
 
