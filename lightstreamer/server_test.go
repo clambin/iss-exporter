@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,8 +151,8 @@ func TestServer_Subscribe(t *testing.T) {
 	var a timedAdapter
 	go a.Run(t.Context(), 500*time.Millisecond)
 
-	//l := slog.New(slog.DiscardHandler)
-	l := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	l := slog.New(slog.DiscardHandler)
+	//l := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	s := NewServer("set", "cid", map[string]AdapterSet{"DEFAULT": {"1": &a}}, l)
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)

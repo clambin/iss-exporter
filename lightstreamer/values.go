@@ -31,7 +31,7 @@ func (v Values) Update(values []string) (Values, error) {
 	var idx int
 	for _, value := range values {
 		if idx > len(v)-1 {
-			return Values{}, errors.New("invalid value")
+			return Values{}, errors.New("too many values in update")
 		}
 		switch {
 		case value == "":
@@ -49,7 +49,10 @@ func (v Values) Update(values []string) (Values, error) {
 			if v2, err := url.PathUnescape(value); err == nil {
 				value = v2
 			}
-			v[idx] = valuePtr(value)
+			// don't change the value if we don't need to
+			if v[idx] == nil || *(v[idx]) != Value(value) {
+				v[idx] = valuePtr(value)
+			}
 		}
 		idx++
 	}

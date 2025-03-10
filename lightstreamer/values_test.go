@@ -64,9 +64,9 @@ func TestValues_Update(t *testing.T) {
 }
 
 // Before:
-// BenchmarkValues_Update/orig-16         	  670264	      1636 ns/op	    8192 B/op	       1 allocs/op
+// BenchmarkValues_Update/current-16                  47793             25013 ns/op           16000 B/op       1000 allocs/op
 // Current:
-// BenchmarkValues_Update/current-16      	 2432552	       493.0 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkValues_Update/current-16                 140952              8431 ns/op               0 B/op          0 allocs/op
 func BenchmarkValues_Update(b *testing.B) {
 	const size = 1_000
 	orig := make(Values, size)
@@ -74,7 +74,7 @@ func BenchmarkValues_Update(b *testing.B) {
 	for i := range size {
 		value := Value(strconv.Itoa(i))
 		orig[i] = &value
-		update[i] = ""
+		update[i] = string(value)
 	}
 	b.Run("current", func(b *testing.B) {
 		b.ReportAllocs()
