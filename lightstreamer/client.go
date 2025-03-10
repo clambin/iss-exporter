@@ -25,8 +25,8 @@ const (
 	lsProtocol = "TLCP-2.1.0"
 )
 
-// A ClientSession manages a client session with a LightStreamer server.
-// Its main usage is to manage subscriptions to one or more feeds from the server's Data Adapter Set.
+// A ClientSession establishes and manages a client session with a LightStreamer server.
+// Its main usage is to subscribe to one or more feeds from the server and receive updates for those subscriptions.
 type ClientSession struct {
 	sessionID           atomic.Value
 	sessionCreationTime atomic.Value
@@ -112,6 +112,8 @@ func (c *ClientSession) serve(ctx context.Context, r io.ReadCloser) error {
 	}()
 	ch := make(chan client.Message)
 	done := make(chan struct{})
+	// read messages in a separate go routine we can terminate when ctx is canceled.
+	// go routine stops when we close r
 	go readAllMessages(r, ch, done)
 	for {
 		select {
@@ -386,6 +388,7 @@ func WithCID(cid string) ClientSessionOption {
 		}
 	}
 */
+
 func WithContentLength(length uint) ClientSessionOption {
 	return func(c *ClientSession) {
 		c.parameters.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
