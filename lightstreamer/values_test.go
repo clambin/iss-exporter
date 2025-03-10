@@ -66,7 +66,7 @@ func TestValues_Update(t *testing.T) {
 // Before:
 // BenchmarkValues_Update/current-16                  47793             25013 ns/op           16000 B/op       1000 allocs/op
 // Current:
-// BenchmarkValues_Update/current-16                 140952              8431 ns/op               0 B/op          0 allocs/op
+// BenchmarkValues_Update/current-16                 187110              6410 ns/op               0 B/op          0 allocs/op
 func BenchmarkValues_Update(b *testing.B) {
 	const size = 1_000
 	orig := make(Values, size)

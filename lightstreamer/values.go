@@ -46,10 +46,13 @@ func (v Values) Update(values []string) (Values, error) {
 			}
 			idx += step - 1
 		default:
-			if v2, err := url.PathUnescape(value); err == nil {
-				value = v2
+			// don't unescape if we don't need to.
+			if strings.IndexRune(value, '%') >= 0 {
+				if v2, err := url.PathUnescape(value); err == nil {
+					value = v2
+				}
 			}
-			// don't change the value if we don't need to
+			// don't change the value if we don't need to.
 			if v[idx] == nil || *(v[idx]) != Value(value) {
 				v[idx] = valuePtr(value)
 			}
