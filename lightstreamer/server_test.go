@@ -161,20 +161,24 @@ func TestServer_Subscribe(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
-			t.Cleanup(cancel)
-			clientSession, err := NewClientSession(
-				t.Context(),
+			defer cancel()
+			clientSession := NewClientSession(
 				WithLogger(l),
 				WithServerURL(ts.URL),
 				WithAdapterSet("set"),
 				WithCID("cid"),
 			)
-			if err != nil {
+			if err := clientSession.Connect(ctx); err != nil {
+				t.Fatal(err)
+			}
+			ctx2, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if err := clientSession.SessionEstablished(ctx2); err != nil {
 				t.Fatal(err)
 			}
 
 			var rcvd atomic.Bool
-			err = clientSession.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {
+			err := clientSession.Subscribe(ctx, tt.adapter, tt.group, []string{"Value"}, 0, func(item int, values Values) {
 				rcvd.Store(true)
 			})
 			if tt.wantErr != (err != nil) {

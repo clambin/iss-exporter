@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 var (
@@ -96,17 +97,22 @@ var groups = []string{
 var schema = []string{"Value"}
 
 func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*lightstreamer.ClientSession, error) {
-	session, err := lightstreamer.NewClientSession(
-		ctx,
+	session := lightstreamer.NewClientSession(
 		lightstreamer.WithLogger(logger),
 		lightstreamer.WithAdapterSet("ISSLIVE"),
 	)
-	if err != nil {
-		return nil, err
+	if err := session.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("lightstreamer connect: %w", err)
+	}
+
+	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := session.SessionEstablished(ctx2); err != nil {
+		return nil, fmt.Errorf("lightstreamer session: %w", err)
 	}
 
 	for _, group := range groups {
-		if err = session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(_ int, values lightstreamer.Values) {
+		err := session.Subscribe(ctx, "DEFAULT", group, schema, 0.1, func(_ int, values lightstreamer.Values) {
 			if values[0] == nil {
 				logger.Warn("empty value in subscription. ignoring")
 				return
@@ -118,7 +124,8 @@ func lightStreamerClientSession(ctx context.Context, logger *slog.Logger) (*ligh
 			}
 			telemetryMetric.WithLabelValues(group).Set(value)
 			logger.Debug("update processed", "group", group, "value", value)
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, fmt.Errorf("subscribe(%s): %w", group, err)
 		}
 		logger.Info("subscribed successfully", "group", group)

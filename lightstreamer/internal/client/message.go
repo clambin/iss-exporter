@@ -18,10 +18,12 @@ type Message struct {
 }
 
 func (m Message) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("type", string(m.MessageType)),
-		slog.Any("data", m.Data),
-	)
+	attrs := make([]slog.Attr, 1, 2)
+	attrs[0] = slog.String("type", string(m.MessageType))
+	if m.MessageType != "PROBE" {
+		attrs = append(attrs, slog.Any("data", m.Data))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 type MessageType string
