@@ -1,6 +1,7 @@
 package lightstreamer
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -60,4 +61,33 @@ func TestValues_Update(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Before:
+// BenchmarkValues_Update/orig-16         	  670264	      1636 ns/op	    8192 B/op	       1 allocs/op
+// Current:
+// BenchmarkValues_Update/current-16      	 2432552	       493.0 ns/op	       0 B/op	       0 allocs/op
+func BenchmarkValues_Update(b *testing.B) {
+	const size = 1_000
+	orig := make(Values, size)
+	update := make([]string, size)
+	for i := range size {
+		value := Value(strconv.Itoa(i))
+		orig[i] = &value
+		update[i] = ""
+	}
+	b.Run("current", func(b *testing.B) {
+		b.ReportAllocs()
+		var err error
+		var next Values
+		for b.Loop() {
+			next, err = orig.Update(update)
+			if err != nil {
+				b.Fatalf("Values.Update() error = %v", err)
+			}
+		}
+		if orig.String() != next.String() {
+			b.Errorf("unexpected result")
+		}
+	})
 }
