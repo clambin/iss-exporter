@@ -28,18 +28,18 @@ const (
 // A ClientSession manages a client session with a LightStreamer server.
 // Its main usage is to manage subscriptions to one or more feeds from the server's Data Adapter Set.
 type ClientSession struct {
-	serverURL           string
+	sessionID           atomic.Value
+	sessionCreationTime atomic.Value
 	httpClient          *http.Client
 	parameters          url.Values
-	sessionID           atomic.Value
 	cancelFunc          context.CancelFunc
+	logger              *slog.Logger
+	serverURL           string
+	subscriptions       subscriptions
 	subscriptionID      atomic.Int32
 	requestID           atomic.Int32
-	subscriptions       subscriptions
-	logger              *slog.Logger
 	connections         atomic.Int32
 	timeDifference      atomic.Int32
-	sessionCreationTime atomic.Value
 }
 
 // NewClientSession returns a new client session with a LightStreamer server.
@@ -119,10 +119,7 @@ func (c *ClientSession) serve(ctx context.Context, r io.ReadCloser) error {
 			return ctx.Err()
 		case <-done:
 			return nil
-		case msg, ok := <-ch:
-			if !ok {
-				return nil
-			}
+		case msg := <-ch:
 			c.handleMessage(ctx, msg)
 		}
 	}
@@ -135,7 +132,6 @@ func readAllMessages(r io.Reader, ch chan client.Message, done chan struct{}) {
 			ch <- msg
 		}
 	}
-	close(ch)
 	done <- struct{}{}
 }
 
@@ -171,13 +167,13 @@ func (c *ClientSession) handleLoop(ctx context.Context, data client.LOOPData) {
 }
 
 func (c *ClientSession) handleSync(data client.SYNCData) {
-	var timeDiff int
+	var delta int
 	if cTime, ok := c.sessionCreationTime.Load().(time.Time); ok {
 		sessionOpenTime := int(time.Since(cTime).Seconds())
-		timeDiff = data.SecondsSinceInitialHeader - sessionOpenTime
+		delta = data.SecondsSinceInitialHeader - sessionOpenTime
 	}
-	c.timeDifference.Store(int32(timeDiff))
-	c.logger.Debug("time sync", "timeDiff", time.Duration(timeDiff)*time.Second)
+	c.timeDifference.Store(int32(delta))
+	c.logger.Debug("time sync", "delta", time.Duration(delta)*time.Second)
 }
 
 func (c *ClientSession) handleUpdate(data client.UData) {

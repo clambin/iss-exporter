@@ -1,9 +1,7 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"strconv"
@@ -112,24 +110,6 @@ var (
 		"REQERR": parseREQERR,
 	}
 )
-
-func SessionMessages(r io.Reader, logger *slog.Logger) <-chan Message {
-	ch := make(chan Message)
-	go func() {
-		defer close(ch)
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			msg, err := ParseSessionMessage(scanner.Text())
-			//logger.Debug("message received", "err", err, "msg", msg)
-			if err != nil {
-				logger.Error("error reading message", "err", err)
-				return
-			}
-			ch <- msg
-		}
-	}()
-	return ch
-}
 
 func ParseSessionMessage(line string) (Message, error) {
 	return parseMessage(line, sessionMessageParsers)

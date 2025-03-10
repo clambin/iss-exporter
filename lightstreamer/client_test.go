@@ -26,7 +26,7 @@ func TestClientSession_Connect(t *testing.T) {
 			_, _ = w.Write([]byte(resp + "\n"))
 			w.(http.Flusher).Flush()
 		}
-		<-r.Context().Done()
+		//<-r.Context().Done()
 	}))
 	t.Cleanup(ts.Close)
 
