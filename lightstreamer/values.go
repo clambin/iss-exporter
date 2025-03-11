@@ -47,7 +47,7 @@ func (v Values) Update(values []string) (Values, error) {
 			idx += step - 1
 		default:
 			// don't unescape if we don't need to.
-			if strings.IndexRune(value, '%') >= 0 {
+			if strings.ContainsRune(value, '%') {
 				if v2, err := url.PathUnescape(value); err == nil {
 					value = v2
 				}
