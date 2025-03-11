@@ -1,18 +1,27 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
-	"io"
-	"iter"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
 )
 
+var _ slog.LogValuer = &Message{}
+
 type Message struct {
 	Data        any
 	MessageType MessageType
+}
+
+func (m Message) LogValue() slog.Value {
+	attrs := make([]slog.Attr, 1, 2)
+	attrs[0] = slog.String("type", string(m.MessageType))
+	if m.MessageType != "PROBE" {
+		attrs = append(attrs, slog.Any("data", m.Data))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 type MessageType string
@@ -75,6 +84,8 @@ type PROGData struct {
 	Progressive int
 }
 
+type PROBEData struct{}
+
 type UnsupportedData struct {
 	Values []string
 }
@@ -101,21 +112,6 @@ var (
 		"REQERR": parseREQERR,
 	}
 )
-
-func SessionMessages(r io.Reader) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			msg, err := ParseSessionMessage(scanner.Text())
-			if !yield(msg, err) {
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}
-}
 
 func ParseSessionMessage(line string) (Message, error) {
 	return parseMessage(line, sessionMessageParsers)
@@ -201,7 +197,7 @@ func parseSYNC(parts []string) (any, error) {
 }
 
 func parsePROBE(_ []string) (any, error) {
-	return nil, nil
+	return PROBEData{}, nil
 }
 
 func parseLOOP(parts []string) (any, error) {

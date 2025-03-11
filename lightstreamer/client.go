@@ -1,6 +1,7 @@
 package lightstreamer
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -9,189 +10,183 @@ import (
 	"github.com/clambin/iss-exporter/lightstreamer/internal/client"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	serverURL     = "https://push.lightstreamer.com/lightstreamer"
-	defaultCID    = "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"
-	lsProtocol    = "TLCP-2.1.0"
-	timeDiffLimit = 5
+	serverURL  = "https://push.lightstreamer.com/lightstreamer"
+	defaultCID = "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg"
+	lsProtocol = "TLCP-2.1.0"
 )
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// A ClientSession manages a client session with a LightStreamer server.  Its main usage is to manage subscriptions to one or more feeds from the server's Data Adapter Set.
+// A ClientSession establishes and manages a client session with a LightStreamer server.
+// Its main usage is to subscribe to one or more feeds from the server and receive updates for those subscriptions.
 type ClientSession struct {
-	createdTime    time.Time
-	logger         *slog.Logger
-	httpClient     *http.Client
-	loginArgs      url.Values
-	subscriptions  map[int]*subscription
-	sessionID      string
-	serverURL      string
-	connectTimeout time.Duration
-	requestLimit   int
-	keepAliveTime  int
-	requestID      int
-	subscriptionID int
-	lock           sync.RWMutex
+	sessionID           atomic.Value
+	sessionCreationTime atomic.Value
+	httpClient          *http.Client
+	parameters          url.Values
+	cancelFunc          context.CancelFunc
+	logger              *slog.Logger
+	serverURL           string
+	subscriptions       subscriptions
+	subscriptionID      atomic.Int32
+	requestID           atomic.Int32
+	connections         atomic.Int32
+	timeDifference      atomic.Int32
 }
 
 // NewClientSession returns a new client session with a LightStreamer server.
 // Use ClientSessionOption arguments to configure the session.
+func NewClientSession(options ...ClientSessionOption) *ClientSession {
+	c := ClientSession{
+		serverURL:  serverURL,
+		httpClient: http.DefaultClient,
+		parameters: url.Values{"LS_cid": []string{defaultCID}},
+		logger:     slog.New(slog.DiscardHandler),
+	}
+	for _, o := range options {
+		o(&c)
+	}
+	return &c
+}
+
+// Connect establishes a connection with the LightStreamer server and processes all incoming updates.
 //
-// Callers can rely on the session being bound (and ready for subscription requests) when NewClientSession returns.
-func NewClientSession(ctx context.Context, opts ...ClientSessionOption) (*ClientSession, error) {
-	clientSession := ClientSession{
-		logger:         slog.Default(),
-		subscriptions:  make(map[int]*subscription),
-		serverURL:      serverURL,
-		httpClient:     http.DefaultClient,
-		connectTimeout: 5 * time.Second,
-		loginArgs:      url.Values{"LS_cid": []string{defaultCID}},
+// Note: on return, the session is still in an unbound state and calling Subscribe will fail.
+// Use SessionEstablished to wait for the session to be bound.
+func (c *ClientSession) Connect(ctx context.Context) error {
+	ctx, c.cancelFunc = context.WithCancel(ctx)
+	r, err := c.createSession(ctx)
+	if err == nil {
+		go func() { _ = c.serve(ctx, r) }()
 	}
-	for _, o := range opts {
-		o(&clientSession)
-	}
-	if err := clientSession.run(ctx, clientSession.loginArgs); err != nil {
-		return nil, err
-	}
-	return &clientSession, nil
-
+	return err
 }
 
-// Bound returns true if the client session is currently bound to the server, i.e. the client can subscribe to a feed.
-func (s *ClientSession) Bound() bool {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	return s.sessionID != ""
-}
-
-func (s *ClientSession) run(ctx context.Context, loginArgs url.Values) error {
-	r, err := s.connect(ctx, loginArgs)
-	if err != nil {
-		return err
+// Disconnect closes the connection to the LightStreamer server.
+func (c *ClientSession) Disconnect() {
+	if c.cancelFunc != nil {
+		c.cancelFunc()
 	}
-	go s.handleSession(ctx, r)
-	return s.waitOnConnection(ctx, s.connectTimeout)
 }
 
-func (s *ClientSession) handleSession(ctx context.Context, r io.ReadCloser) {
+// SessionEstablished waits for the session to be bound, or the context to be canceled.
+func (c *ClientSession) SessionEstablished(ctx context.Context) error {
+	for {
+		if sessionID, ok := c.sessionID.Load().(string); ok && sessionID != "" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// ConnectWithSession is a convenience function that opens a connection and waits for a session to be established.
+func (c *ClientSession) ConnectWithSession(ctx context.Context, timeout time.Duration) error {
+	if err := c.Connect(ctx); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := c.SessionEstablished(ctx); err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	return nil
+}
+
+func (c *ClientSession) serve(ctx context.Context, r io.ReadCloser) error {
+	c.logger.Debug("serving connection", "count", c.connections.Add(1))
+	defer func() {
+		c.logger.Debug("connection closed", "count", c.connections.Add(-1))
+		_ = r.Close()
+	}()
 	ch := make(chan client.Message)
-	go s.readConnection(ch, r)
+	done := make(chan struct{})
+	// read messages in a separate go routine we can terminate when ctx is canceled.
+	// go routine stops when we close r
+	go readAllMessages(r, ch, done)
 	for {
 		select {
 		case <-ctx.Done():
-			_ = r.Close()
-			return
+			return ctx.Err()
+		case <-done:
+			return nil
 		case msg := <-ch:
-			// s.logger.Debug("message received", "msg", msg)
-			var err error
-			switch data := msg.Data.(type) {
-			case client.CONOKData:
-				err = s.handleConnectionOK(data)
-			case client.UData:
-				err = s.handleUpdate(data)
-			case client.SYNCData:
-				err = s.handleSync(data)
-			case client.LOOPData:
-				_ = r.Close()
-				if r, err = s.rebind(ctx); err == nil {
-					go s.readConnection(ch, r)
-				}
-			case client.ENDData:
-				s.logger.Info("session terminated", "code", data.Code, "msg", data.Message)
-			}
-			if err != nil {
-				s.logger.Error("error handling message", "msgType", msg.MessageType, "err", err)
-			}
+			c.handleMessage(ctx, msg)
 		}
 	}
 }
 
-func (s *ClientSession) readConnection(ch chan<- client.Message, r io.Reader) {
-	for msg, err := range client.SessionMessages(r) {
-		if err != nil {
-			s.logger.Error("error reading message", "err", err)
-			continue
+func readAllMessages(r io.Reader, ch chan client.Message, done chan struct{}) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		if msg, err := client.ParseSessionMessage(scanner.Text()); err == nil {
+			ch <- msg
 		}
-		ch <- msg
+	}
+	done <- struct{}{}
+}
+
+func (c *ClientSession) handleMessage(ctx context.Context, msg client.Message) {
+	switch data := msg.Data.(type) {
+	case client.CONOKData:
+		c.sessionID.Store(data.SessionID)
+		c.logger.Debug("session established", "sessionID", data.SessionID)
+	case client.PROGData, client.NOOPData, client.SERVNAMEData, client.CLIENTIPData, client.CONSData,
+		client.CONFData, client.SUBOKData, client.PROBEData:
+	case client.UData:
+		c.handleUpdate(data)
+	case client.SYNCData:
+		c.handleSync(data)
+	case client.LOOPData:
+		go c.handleLoop(ctx, data)
+	case client.ENDData:
+		c.logger.Debug("connection closing", "data", data)
+	default:
+		c.logger.Debug("received message", "msg", msg)
 	}
 }
 
-func (s *ClientSession) waitOnConnection(ctx context.Context, duration time.Duration) error {
-	subCtx, cancel := context.WithTimeout(ctx, duration)
-	defer cancel()
-	for {
+func (c *ClientSession) handleLoop(ctx context.Context, data client.LOOPData) {
+	c.logger.Debug("rebinding session", "delay", data.ExpectedDelay)
+	if data.ExpectedDelay > 0 {
 		select {
-		case <-subCtx.Done():
-			return subCtx.Err()
-		case <-time.After(100 * time.Millisecond):
-			if s.Bound() {
-				return nil
-			}
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(data.ExpectedDelay) * time.Second):
 		}
 	}
-}
-
-func (s *ClientSession) connect(ctx context.Context, parameters url.Values) (io.ReadCloser, error) {
-	resp, err := s.call(ctx, "create_session", parameters)
-	if err != nil {
-		return nil, err
+	if r, err := c.rebind(ctx, c.sessionID.Load().(string)); err == nil {
+		go func() { _ = c.serve(ctx, r) }()
 	}
-	s.createdTime = time.Now()
-	return resp.Body, nil
 }
 
-func (s *ClientSession) rebind(ctx context.Context) (io.ReadCloser, error) {
-	parameters := make(url.Values)
-	parameters.Set("LS_session", s.sessionID)
-
-	resp, err := s.call(ctx, "bind_session", parameters)
-	if err != nil {
-		return nil, err
+func (c *ClientSession) handleSync(data client.SYNCData) {
+	var delta int
+	if cTime, ok := c.sessionCreationTime.Load().(time.Time); ok {
+		sessionOpenTime := int(time.Since(cTime).Seconds())
+		delta = data.SecondsSinceInitialHeader - sessionOpenTime
 	}
-	s.createdTime = time.Now()
-	return resp.Body, nil
+	c.timeDifference.Store(int32(delta))
+	c.logger.Debug("time sync", "delta", time.Duration(delta)*time.Second)
 }
 
-func (s *ClientSession) handleConnectionOK(data client.CONOKData) (err error) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	s.sessionID = data.SessionID
-	s.requestLimit = data.RequestLimit
-	s.keepAliveTime = data.KeepAliveTime
-	s.logger.Debug("session is bound", "sessionID", s.sessionID)
-	return nil
-}
-
-func (s *ClientSession) handleSync(data client.SYNCData) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	serverAge := data.SecondsSinceInitialHeader
-	clientAge := int(time.Since(s.createdTime).Seconds())
-	s.logger.Debug("time sync check", "serverAge", serverAge, "clientAge", clientAge)
-	if diff := clientAge - serverAge; math.Abs(float64(diff)) > timeDiffLimit {
-		s.logger.Warn("client/server time difference", "diff", diff)
-	}
-	return nil
-}
-
-func (s *ClientSession) handleUpdate(data client.UData) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	sub, ok := s.subscriptions[data.SubscriptionID]
+func (c *ClientSession) handleUpdate(data client.UData) {
+	sub, ok := c.subscriptions.get(data.SubscriptionID)
 	if !ok {
-		return fmt.Errorf("unknown subscription ID %d", data.SubscriptionID)
+		c.logger.Warn("no subscription found for update", "subscriptionID", data.SubscriptionID)
 	}
-	return sub.update(data.Item, data.Values)
+	_ = sub.update(data.Item, data.Values)
 }
 
 // Subscribe registers a new subscription with the server for the specified adapter & group, asking for data adhering to the specified schema.
@@ -200,38 +195,21 @@ func (s *ClientSession) handleUpdate(data client.UData) error {
 // If maxFrequency is non-zero, Subscribe asks for data to be sent at the specified maximum frequency (in updates per second).
 //
 // Notes:
+//   - all subscriptions are in "MERGE" mode.
 //   - adapter, group & schema are application-specific and not validated by ClientSession.
 //   - maxFrequency may be ignored by the server. ClientSession does not provide any throttling.
-func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64, f UpdateFunc) error {
-	if !s.Bound() {
-		return errors.New("client is not connected")
+func (c *ClientSession) Subscribe(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64, f func(item int, values Values)) error {
+	if c.sessionID.Load() == nil {
+		return errors.New("no session")
 	}
 
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.requestID++
-	s.subscriptionID++
-	parameters := make(url.Values)
-	parameters.Set("LS_op", "add")
-	parameters.Set("LS_reqId", strconv.Itoa(s.requestID))
-	parameters.Set("LS_session", s.sessionID)
-	parameters.Set("LS_subId", strconv.Itoa(s.subscriptionID))
-	parameters.Set("LS_data_adapter", adapter)
-	parameters.Set("LS_group", group)
-	parameters.Set("LS_schema", strings.Join(schema, " "))
-	parameters.Set("LS_mode", "MERGE")
-	if maxFrequency > 0 {
-		parameters.Set("LS_requested_max_frequency", strconv.FormatFloat(maxFrequency, 'f', -1, 64))
-	}
-
-	resp, err := s.call(ctx, "control", parameters)
+	subID, r, err := c.addSubscription(ctx, adapter, group, schema, maxFrequency)
 	if err != nil {
 		return err
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	body, _ := io.ReadAll(r)
+	_ = r.Close()
 	body = bytes.TrimSuffix(body, []byte("\n"))
 	body = bytes.TrimSuffix(body, []byte("\r"))
 
@@ -241,26 +219,63 @@ func (s *ClientSession) Subscribe(ctx context.Context, adapter string, group str
 	}
 	switch data := msg.Data.(type) {
 	case client.REQOKData:
-		s.subscriptions[s.subscriptionID] = &subscription{f: f}
+		c.subscriptions.add(subID, &subscription{onUpdate: f})
 		return nil
 	case client.REQERRData:
 		return fmt.Errorf("%d: %s", data.ErrorCode, data.ErrorMessage)
 	default:
-		return fmt.Errorf("subscription failed: unexpected response %q", msg.MessageType)
+		return fmt.Errorf("subscription failed: unexpected response type %q", msg.MessageType)
 	}
+}
+
+func (c *ClientSession) createSession(ctx context.Context) (io.ReadCloser, error) {
+	r, err := c.call(ctx, "create_session", c.parameters)
+	if err == nil {
+		c.sessionCreationTime.Store(time.Now())
+	}
+	return r, err
+}
+
+func (c *ClientSession) rebind(ctx context.Context, sessionID string) (io.ReadCloser, error) {
+	parameters := make(url.Values)
+	parameters.Set("LS_session", sessionID)
+	r, err := c.call(ctx, "bind_session", parameters)
+	if err == nil {
+		c.sessionCreationTime.Store(time.Now())
+	}
+	return r, err
+}
+
+func (c *ClientSession) addSubscription(ctx context.Context, adapter string, group string, schema []string, maxFrequency float64) (int, io.ReadCloser, error) {
+	subID := int(c.subscriptionID.Add(1))
+	parameters := make(url.Values)
+	parameters.Set("LS_op", "add")
+	parameters.Set("LS_reqId", strconv.Itoa(int(c.requestID.Add(1))))
+	parameters.Set("LS_session", c.sessionID.Load().(string))
+	parameters.Set("LS_subId", strconv.Itoa(subID))
+	parameters.Set("LS_data_adapter", adapter)
+	parameters.Set("LS_group", group)
+	parameters.Set("LS_schema", strings.Join(schema, " "))
+	parameters.Set("LS_mode", "MERGE")
+	if maxFrequency > 0 {
+		parameters.Set("LS_requested_max_frequency", strconv.FormatFloat(maxFrequency, 'f', -1, 64))
+	}
+
+	r, err := c.call(ctx, "control", parameters)
+	return subID, r, err
 }
 
 var encodedArgs = url.Values{"LS_protocol": []string{lsProtocol}}.Encode()
 
-func (s *ClientSession) call(ctx context.Context, endpoint string, values url.Values) (*http.Response, error) {
-	reqURL := s.serverURL + "/" + endpoint + ".txt?" + encodedArgs
+func (c *ClientSession) call(ctx context.Context, endpoint string, values url.Values) (io.ReadCloser, error) {
+	reqURL := c.serverURL + "/" + endpoint + ".txt?" + encodedArgs
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +283,7 @@ func (s *ClientSession) call(ctx context.Context, endpoint string, values url.Va
 		defer func() { _ = resp.Body.Close() }()
 		return nil, lsError(resp)
 	}
-	return resp, nil
+	return resp.Body, nil
 }
 
 func lsError(resp *http.Response) error {
@@ -279,6 +294,50 @@ func lsError(resp *http.Response) error {
 		return fmt.Errorf("lightstreamer: %s", string(body))
 	}
 	return fmt.Errorf("http: %d %s", resp.StatusCode, cmp.Or(resp.Status, http.StatusText(resp.StatusCode)))
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type subscription struct {
+	last     map[int]Values
+	onUpdate UpdateFunc
+}
+
+// UpdateFunc is called for every update received from the server, with update's item number and its Values.
+// The Values are fully decoded & processed, so the callback always receives a complete update.
+type UpdateFunc func(item int, values Values)
+
+func (s *subscription) update(item int, values []string) error {
+	if s.last == nil {
+		s.last = make(map[int]Values)
+	}
+	next, err := s.last[item].Update(values)
+	if err == nil {
+		s.last[item] = next
+		s.onUpdate(item, next)
+	}
+	return err
+}
+
+type subscriptions struct {
+	items map[int]*subscription
+	lock  sync.RWMutex
+}
+
+func (s *subscriptions) add(item int, sub *subscription) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.items == nil {
+		s.items = make(map[int]*subscription)
+	}
+	s.items[item] = sub
+}
+
+func (s *subscriptions) get(item int) (*subscription, bool) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	sub, ok := s.items[item]
+	return sub, ok
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -310,58 +369,28 @@ func WithHTTPClient(client *http.Client) ClientSessionOption {
 // WithAdapterSet sets the Adapter Set to use to create the session. There is no default.
 func WithAdapterSet(adapterSet string) ClientSessionOption {
 	return func(c *ClientSession) {
-		c.loginArgs.Set("LS_adapter_set", adapterSet)
+		c.parameters.Set("LS_adapter_set", adapterSet)
 	}
 }
 
 // WithCID sets the CID to use to create the session. The default is "mgQkwtwdysogQz2BJ4Ji%20kOj2Bg".
 func WithCID(cid string) ClientSessionOption {
 	return func(c *ClientSession) {
-		c.loginArgs.Set("LS_cid", cid)
+		c.parameters.Set("LS_cid", cid)
 	}
 }
 
 /*
-func WithCredentials(username, password string) ClientSessionOption {
-	return func(c *ClientSession) {
-		c.loginArgs.Set("LS_user", username)
-		c.loginArgs.Set("LS_password", password)
+	func WithCredentials(username, password string) ClientSessionOption {
+		return func(c *ClientSession) {
+			c.loginArgs.Set("LS_user", username)
+			c.loginArgs.Set("LS_password", password)
+		}
 	}
-}
+*/
 
 func WithContentLength(length uint) ClientSessionOption {
 	return func(c *ClientSession) {
-		c.loginArgs.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
+		c.parameters.Set("LS_content_length", strconv.FormatUint(uint64(length), 10))
 	}
-}
-*/
-
-// WithBindTimeout specifies how long NewClientSession waits for the session to be bound. If the timeout is exceeded, NewClientSession returns an error.
-func WithBindTimeout(timeout time.Duration) ClientSessionOption {
-	return func(c *ClientSession) {
-		c.connectTimeout = timeout
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-type subscription struct {
-	last map[int]Values
-	f    UpdateFunc
-}
-
-// UpdateFunc is called for every update received from the server, with update's item number and its Values.
-// The Values are fully decoded & processed, so the callback always receives a complete update.
-type UpdateFunc func(item int, values Values)
-
-func (s *subscription) update(item int, values []string) error {
-	if s.last == nil {
-		s.last = make(map[int]Values)
-	}
-	next, err := s.last[item].Update(values)
-	if err == nil {
-		s.last[item] = next
-		s.f(item, next)
-	}
-	return err
 }

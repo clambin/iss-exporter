@@ -28,21 +28,17 @@ func (v Values) Update(values []string) (Values, error) {
 		v = make(Values, len(values))
 	}
 
-	// don't really need to make a copy, since Update() operates on a copy of v
-	next := make(Values, len(v))
-	copy(next, v)
-
 	var idx int
 	for _, value := range values {
 		if idx > len(v)-1 {
-			return Values{}, errors.New("invalid value")
+			return Values{}, errors.New("too many values in update")
 		}
 		switch {
 		case value == "":
 		case value == "#":
-			next[idx] = nil
+			v[idx] = nil
 		case value == "$":
-			next[idx] = valuePtr("")
+			v[idx] = valuePtr("")
 		case value[0] == '^':
 			step, err := strconv.Atoi(value[1:])
 			if err != nil {
@@ -50,10 +46,16 @@ func (v Values) Update(values []string) (Values, error) {
 			}
 			idx += step - 1
 		default:
-			if v2, err := url.PathUnescape(value); err == nil {
-				value = v2
+			// don't unescape if we don't need to.
+			if strings.IndexRune(value, '%') >= 0 {
+				if v2, err := url.PathUnescape(value); err == nil {
+					value = v2
+				}
 			}
-			next[idx] = valuePtr(value)
+			// don't change the value if we don't need to.
+			if v[idx] == nil || *(v[idx]) != Value(value) {
+				v[idx] = valuePtr(value)
+			}
 		}
 		idx++
 	}
@@ -61,7 +63,7 @@ func (v Values) Update(values []string) (Values, error) {
 		return Values{}, errors.New("not enough values in update")
 	}
 
-	return next, nil
+	return v, nil
 }
 
 func valuePtr(v string) *Value {
