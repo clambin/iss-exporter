@@ -28,29 +28,37 @@ var (
 		Help:        "lightstreamer telemetry",
 		ConstLabels: nil,
 	}, []string{"group"})
+
+	connectionMetric = prometheus.NewDesc(
+		prometheus.BuildFQName("iss", "lightstreamer", "connection_count"),
+		"number of connections",
+		nil,
+		nil,
+	)
 )
 
 type Collector struct {
-	connection *lightstreamer.ClientSession
-	Logger     *slog.Logger
+	ClientSession *lightstreamer.ClientSession
+	Logger        *slog.Logger
 }
 
 func NewCollector(ctx context.Context, logger *slog.Logger) (c *Collector, err error) {
 	c = &Collector{
 		Logger: logger,
 	}
-	c.connection, err = lightStreamerClientSession(ctx, logger)
+	c.ClientSession, err = lightStreamerClientSession(ctx, logger)
 	return c, err
 }
 
 func (c Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- locationMetric
+	ch <- connectionMetric
 	telemetryMetric.Describe(ch)
 }
 
 func (c Collector) Collect(ch chan<- prometheus.Metric) {
 	telemetryMetric.Collect(ch)
-
+	ch <- prometheus.MustNewConstMetric(connectionMetric, prometheus.GaugeValue, float64(c.ClientSession.Connections.Load()))
 	longitude, latitude, err := getLocation()
 	if err != nil {
 		c.Logger.Error("failed to get location", "err", err)

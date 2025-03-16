@@ -38,7 +38,7 @@ type ClientSession struct {
 	subscriptions       subscriptions
 	subscriptionID      atomic.Int32
 	requestID           atomic.Int32
-	connections         atomic.Int32
+	Connections         atomic.Int32
 	timeDifference      atomic.Int32
 }
 
@@ -105,9 +105,9 @@ func (c *ClientSession) ConnectWithSession(ctx context.Context, timeout time.Dur
 }
 
 func (c *ClientSession) serve(ctx context.Context, r io.ReadCloser) error {
-	c.logger.Debug("serving connection", "count", c.connections.Add(1))
+	c.logger.Debug("serving connection", "count", c.Connections.Add(1))
 	defer func() {
-		c.logger.Debug("connection closed", "count", c.connections.Add(-1))
+		c.logger.Debug("connection closed", "count", c.Connections.Add(-1))
 		_ = r.Close()
 	}()
 	ch := make(chan client.Message)
