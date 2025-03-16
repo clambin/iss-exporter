@@ -31,15 +31,15 @@ var (
 )
 
 type Collector struct {
-	connection *lightstreamer.ClientSession
-	Logger     *slog.Logger
+	ClientSession *lightstreamer.ClientSession
+	Logger        *slog.Logger
 }
 
 func NewCollector(ctx context.Context, logger *slog.Logger) (c *Collector, err error) {
 	c = &Collector{
 		Logger: logger,
 	}
-	c.connection, err = lightStreamerClientSession(ctx, logger)
+	c.ClientSession, err = lightStreamerClientSession(ctx, logger)
 	return c, err
 }
 
